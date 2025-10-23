@@ -30,11 +30,14 @@ SPDX-License-Identifier: Apache-2.0
 <script>
 import { Chrome } from '@ckpack/vue-color';
 
+let timeout;
+
 export default {
   name: 'ColorPicker',
   components: {
     ChromePicker: Chrome
   },
+  emits: ['color-selected'],
   props: {
     color: {
       type: String,
@@ -63,12 +66,20 @@ export default {
   mounted: function () {
     this.setColor(this.color);
   },
+  beforeUnmount: function () {
+    if (timeout) { clearTimeout(timeout); }
+  },
   methods: {
     setColor: function (color) {
       this.colorValue = color;
+      this.$emit('color-selected', { color, index: this.index });
     },
     changeColor: function (color) {
-      this.setColor(color.hex);
+      if (timeout) { clearTimeout(timeout); }
+      timeout = setTimeout(() => {
+        timeout = null;
+        this.setColor(color.hex);
+      }, 1000);
     }
   }
 };
