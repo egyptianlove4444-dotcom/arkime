@@ -18,3 +18,4 @@ A clear and concise description of any alternative solutions or features you've 
 
 **Additional context**
 Add any other context or screenshots about the feature request here.
+**Did you Ensure that all tests still pass by navigating to the `tests` directory and running `./tests.pl --viewer`**
