@@ -29,27 +29,48 @@ LOCAL enum ArkimeMagicMode magicMode;
 
 /******************************************************************************/
 typedef struct {
+    union {
+        ArkimeParsersNamedFunc cb;
+        ArkimeParsersNamedFunc2 cb2;
+    };
+    void *cbuw;
+} ArkimeNamedFunc_t;
+
+typedef struct {
     GPtrArray *funcs;
     uint16_t   id;
 } ArkimeNamedInfo_t;
 
+// 64 is the max because of the u64 arkime_parsers_has_named_func
 #define MAX_NAMED_FUNCS  64
+
 uint64_t                 arkime_parsers_has_named_func;
 LOCAL uint16_t           namedFuncsMax = 0;
 LOCAL ArkimeNamedInfo_t *namedFuncsArr[MAX_NAMED_FUNCS];
 LOCAL GHashTable        *namedFuncsHash;
 /******************************************************************************/
+typedef struct {
+    char *filename;
+    int   extensionPos;
+} ArkimeFileWithExtension_t;
+
+typedef struct arkime_extensions {
+    const char               *extension;
+    ArkimeParserLoadFunc      loadFunc;
+} ArkimeExtensions_t;
+LOCAL GPtrArray *extensionsArr;
+
+/******************************************************************************/
 #define MAGIC_MATCH(offset, needle) memcmp(data+offset, needle, sizeof(needle)-1) == 0
 #define MAGIC_MATCH_LEN(offset, needle) ((len > (int)sizeof(needle)-1+offset) && (memcmp(data+offset, needle, sizeof(needle)-1) == 0))
 
-#define MAGIC_MEMSTR(offset, needle) arkime_memstr(data+offset, len-offset, needle, sizeof(needle)-1)
 #define MAGIC_MEMSTR_LEN(offset, needle) ((len > (int)sizeof(needle)-1+offset) && (arkime_memstr(data+offset, len-offset, needle, sizeof(needle)-1)))
 
 #define MAGIC_STRCASE(offset, needle) strncasecmp(data+offset, needle, sizeof(needle)-1) == 0
 #define MAGIC_STRCASE_LEN(offset, needle) ((len > (int)sizeof(needle)-1+offset) && (strncasecmp(data+offset, needle, sizeof(needle)-1) == 0))
 
 #define MAGIC_RESULT(str) arkime_field_string_add(field, session, str, sizeof(str)-1, TRUE), str
-const char *arkime_parsers_magic_basic(ArkimeSession_t *session, int field, const char *data, int len)
+LOCAL const char *arkime_parsers_magic_basic(ArkimeSession_t *session, int field, const char *data, int len)
 {
     switch (data[0]) {
     case 0:
@@ -64,7 +85,7 @@ const char *arkime_parsers_magic_basic(ArkimeSession_t *session, int field, cons
         if (MAGIC_MATCH(0, "\000\001\000\000\000")) {
             return MAGIC_RESULT("application/x-font-ttf");
         }
-        if (MAGIC_MATCH(0, "\000\000\002\000\001\000")) {
+        if (MAGIC_MATCH_LEN(0, "\000\000\002\000\001\000")) {
             return MAGIC_RESULT("image/x-win-bitmap");
         }
         break;
@@ -598,14 +619,49 @@ gtdone:
     return 0;
 }
 /******************************************************************************/
-LOCAL int cstring_cmp(const void *a, const void *b)
+LOCAL int filewext_cmp(const void *a, const void *b)
 {
-    return strcmp(*(char **)a, *(char **)b);
+    return strcmp(((ArkimeFileWithExtension_t *)a)->filename, ((ArkimeFileWithExtension_t *)b)->filename);
+}
+/******************************************************************************/
+LOCAL int arkime_parsers_load_so(const char *path)
+{
+    GModule *parser = g_module_open (path, 0); /*G_MODULE_BIND_LAZY | G_MODULE_BIND_LOCAL);*/
+
+    if (!parser) {
+        LOG("ERROR - Couldn't load parser from '%s'\n%s", path, g_module_error());
+        return 1;
+    }
+
+    ArkimePluginInitFunc parser_init;
+
+    if (!g_module_symbol(parser, "arkime_parser_init", (gpointer *)(char * )&parser_init) || parser_init == NULL) {
+        LOG("ERROR - Module %s doesn't have a arkime_parser_init", path);
+        return 1;
+    }
+
+    parser_init();
+    return 0;
+}
+/******************************************************************************/
+void arkime_parsers_register_load_extension(const char *extension, ArkimeParserLoadFunc loadFunc)
+{
+    if (extension[0] != '.') {
+        LOGEXIT("ERROR - Extension '%s'must start with a .", extension);
+    }
+    if (!extensionsArr) {
+        extensionsArr = g_ptr_array_new_full(4, NULL);
+    }
+    ArkimeExtensions_t *ext = ARKIME_TYPE_ALLOC0(ArkimeExtensions_t);
+    ext->extension = extension;
+    ext->loadFunc = loadFunc;
+    g_ptr_array_add(extensionsArr, ext);
 }
 /******************************************************************************/
 void arkime_parsers_init()
 {
-    namedFuncsHash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    if (!namedFuncsHash)
+        namedFuncsHash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
     if (config.nodeClass)
         snprintf(classTag, sizeof(classTag), "class:%s", config.nodeClass);
@@ -676,6 +732,8 @@ void arkime_parsers_init()
         }
     }
 
+    arkime_parsers_register_load_extension(".so", arkime_parsers_load_so);
+
     ArkimeStringHashStd_t loaded;
     HASH_INIT(s_, loaded, arkime_string_hash, arkime_string_cmp);
 
@@ -687,20 +745,6 @@ void arkime_parsers_init()
         hstring = ARKIME_TYPE_ALLOC0(ArkimeString_t);
         hstring->str = disableParsers[d];
         hstring->len = strlen(disableParsers[d]);
-        HASH_ADD(s_, loaded, hstring->str, hstring);
-    }
-
-    if (!config.parseSMTP) {
-        hstring = ARKIME_TYPE_ALLOC0(ArkimeString_t);
-        hstring->str = g_strdup("smtp.so");
-        hstring->len = strlen(hstring->str);
-        HASH_ADD(s_, loaded, hstring->str, hstring);
-    }
-
-    if (!config.parseSMB) {
-        hstring = ARKIME_TYPE_ALLOC0(ArkimeString_t);
-        hstring->str = g_strdup("smb.so");
-        hstring->len = strlen(hstring->str);
         HASH_ADD(s_, loaded, hstring->str, hstring);
     }
 
@@ -719,17 +763,23 @@ void arkime_parsers_init()
         if (!dir)
             continue;
 
-        const gchar *filename;
-        gchar *filenames[100];
-        int    flen = 0;
+        const gchar               *filename;
+        ArkimeFileWithExtension_t  files[100];
+        int                        flen = 0;
 
         while ((filename = g_dir_read_name(dir)) && flen < 100) {
             // Skip hidden files/directories
             if (filename[0] == '.')
                 continue;
 
-            // If it doesn't end with .so we ignore it
-            if (strlen(filename) < 3 || strcasecmp(".so", filename + strlen(filename) - 3) != 0) {
+            guint e;
+            for (e = 0; e < extensionsArr->len; e++) {
+                if (g_str_has_suffix(filename, ((ArkimeExtensions_t *)g_ptr_array_index(extensionsArr, e))->extension)) {
+                    break;
+                }
+            }
+
+            if (e == extensionsArr->len) {
                 continue;
             }
 
@@ -741,42 +791,28 @@ void arkime_parsers_init()
                 continue; /* Already loaded */
             }
 
-            filenames[flen] = g_strdup(filename);
+            files[flen].filename = g_strdup(filename);
+            files[flen].extensionPos = e;
             flen++;
         }
 
-        qsort((void *)filenames, (size_t)flen, sizeof(char *), cstring_cmp);
+        qsort((void *)files, (size_t)flen, sizeof(ArkimeFileWithExtension_t), filewext_cmp);
 
         int i;
         for (i = 0; i < flen; i++) {
-            gchar *path = g_build_filename (config.parsersDir[d], filenames[i], NULL);
-            GModule *parser = g_module_open (path, 0); /*G_MODULE_BIND_LAZY | G_MODULE_BIND_LOCAL);*/
+            gchar *path = g_build_filename (config.parsersDir[d], files[i].filename, NULL);
 
-            if (!parser) {
-                LOG("ERROR - Couldn't load parser %s from '%s'\n%s", filenames[i], path, g_module_error());
-                g_free(filenames[i]);
+            int rc = ((ArkimeExtensions_t *)g_ptr_array_index(extensionsArr, files[i].extensionPos))->loadFunc(path);
+
+            if (rc != 0) {
+                g_free(files[i].filename);
                 g_free (path);
                 continue;
             }
-
-            ArkimePluginInitFunc parser_init;
-
-            if (!g_module_symbol(parser, "arkime_parser_init", (gpointer *)(char * )&parser_init) || parser_init == NULL) {
-                LOG("ERROR - Module %s doesn't have a arkime_parser_init", filenames[i]);
-                g_free(filenames[i]);
-                g_free (path);
-                continue;
-            }
-
-            if (config.debug > 1) {
-                LOG("Loaded %s", path);
-            }
-
-            parser_init();
 
             hstring = ARKIME_TYPE_ALLOC0(ArkimeString_t);
-            hstring->str = filenames[i];
-            hstring->len = strlen(filenames[i]);
+            hstring->str = files[i].filename;
+            hstring->len = strlen(files[i].filename);
             HASH_ADD(s_, loaded, hstring->str, hstring);
 
             if (config.debug)
@@ -823,24 +859,9 @@ void arkime_parsers_init()
 
 
     if (config.extraOps) {
-        for (i = 0; config.extraOps[i]; i++) { }
-        arkime_field_ops_init(&config.ops, i, 0);
-        for (i = 0; config.extraOps[i]; i++) {
-            char *equal = strchr(config.extraOps[i], '=');
-            if (!equal) {
-                CONFIGEXIT("Must be FieldExpr=value, missing equal '%s'", config.extraOps[i]);
-            }
-            int len = strlen(equal + 1);
-            if (!len) {
-                CONFIGEXIT("Must be FieldExpr=value, empty value for '%s'", config.extraOps[i]);
-            }
-            *equal = 0;
-            int fieldPos = arkime_field_by_exp(config.extraOps[i]);
-            if (fieldPos == -1) {
-                CONFIGEXIT("Must be FieldExpr=value, Unknown field expression '%s'", config.extraOps[i]);
-            }
-            arkime_field_ops_add(&config.ops, fieldPos, equal + 1, len);
-        }
+        const char *error = arkime_field_ops_parse(&config.ops, 0, config.extraOps);
+        if (error)
+            CONFIGEXIT("%s", error);
     } else {
         arkime_field_ops_init(&config.ops, 0, 0);
     }
@@ -952,6 +973,13 @@ LOCAL ArkimeClassifyHead_t classifersTcp2[256][256];
 LOCAL ArkimeClassifyHead_t classifersTcpPortSrc[0x10000];
 LOCAL ArkimeClassifyHead_t classifersTcpPortDst[0x10000];
 
+LOCAL ArkimeClassifyHead_t classifersSctp0;
+LOCAL ArkimeClassifyHead_t classifersSctp1[256];
+LOCAL ArkimeClassifyHead_t classifersSctp2[256][256];
+LOCAL ArkimeClassifyHead_t classifersSctpPortSrc[0x10000];
+LOCAL ArkimeClassifyHead_t classifersSctpPortDst[0x10000];
+LOCAL ArkimeClassifyHead_t classifersSctpProtocol[256];
+
 LOCAL ArkimeClassifyHead_t classifersUdp0;
 LOCAL ArkimeClassifyHead_t classifersUdp1[256];
 LOCAL ArkimeClassifyHead_t classifersUdp2[256][256];
@@ -959,7 +987,7 @@ LOCAL ArkimeClassifyHead_t classifersUdpPortSrc[0x10000];
 LOCAL ArkimeClassifyHead_t classifersUdpPortDst[0x10000];
 
 /******************************************************************************/
-void arkime_parsers_classifier_add(ArkimeClassifyHead_t *ch, ArkimeClassify_t *c)
+LOCAL void arkime_parsers_classifier_add(ArkimeClassifyHead_t *ch, ArkimeClassify_t *c)
 {
     int i;
     for (i = 0; i < ch->cnt; i++) {
@@ -1008,7 +1036,7 @@ void arkime_parsers_classifier_register_port_internal(const char *name, void *uw
     c->uw       = uw;
     c->func     = func;
 
-    if (config.debug)
+    if (config.debug > 1)
         LOG("adding %s port:%u type:%02x uw:%p", name, port, type, uw);
 
     if (type & ARKIME_PARSERS_PORT_TCP_SRC)
@@ -1020,6 +1048,11 @@ void arkime_parsers_classifier_register_port_internal(const char *name, void *uw
         arkime_parsers_classifier_add(&classifersUdpPortSrc[port], c);
     if (type & ARKIME_PARSERS_PORT_UDP_DST)
         arkime_parsers_classifier_add(&classifersUdpPortDst[port], c);
+
+    if (type & ARKIME_PARSERS_PORT_SCTP_SRC)
+        arkime_parsers_classifier_add(&classifersSctpPortSrc[port], c);
+    if (type & ARKIME_PARSERS_PORT_SCTP_DST)
+        arkime_parsers_classifier_add(&classifersSctpPortDst[port], c);
 }
 /******************************************************************************/
 void arkime_parsers_classifier_register_tcp_internal(const char *name, void *uw, int offset, const uint8_t *match, int matchlen, ArkimeClassifyFunc func, size_t sessionsize, int apiversion)
@@ -1044,10 +1077,10 @@ void arkime_parsers_classifier_register_tcp_internal(const char *name, void *uw,
     c->minlen   = matchlen + offset;
     c->func     = func;
 
-    if (config.debug) {
+    if (config.debug > 1) {
         char hex[1000];
         arkime_sprint_hex_string(hex, match, matchlen);
-        LOG("adding %s matchlen:%d offset:%d match %s (0x%s)", name, matchlen, offset, match, hex);
+        LOG("adding %s matchlen:%d offset:%d match %.*s (0x%s)", name, matchlen, offset, matchlen, match, hex);
     }
     if (matchlen == 0 || offset != 0) {
         arkime_parsers_classifier_add(&classifersTcp0, c);
@@ -1079,7 +1112,7 @@ void arkime_parsers_classifier_register_udp_internal(const char *name, void *uw,
     c->minlen   = matchlen + offset;
     c->func     = func;
 
-    if (config.debug)
+    if (config.debug > 1)
         LOG("adding %s matchlen:%d offset:%d match %s ", name, matchlen, offset, match);
     if (matchlen == 0 || offset != 0) {
         arkime_parsers_classifier_add(&classifersUdp0, c);
@@ -1090,6 +1123,70 @@ void arkime_parsers_classifier_register_udp_internal(const char *name, void *uw,
         c->matchlen -= 2;
         arkime_parsers_classifier_add(&classifersUdp2[(uint8_t)match[0]][(uint8_t)match[1]], c);
     }
+}
+/******************************************************************************/
+void arkime_parsers_classifier_register_sctp_internal(const char *name, void *uw, int offset, const uint8_t *match, int matchlen, ArkimeClassifyFunc func, size_t sessionsize, int apiversion)
+{
+    if (sizeof(ArkimeSession_t) != sessionsize) {
+        CONFIGEXIT("Parser '%s' built with different version of arkime.h\n %u != %u", name, (unsigned int)sizeof(ArkimeSession_t),  (unsigned int)sessionsize);
+    }
+
+    if (ARKIME_API_VERSION != apiversion) {
+        CONFIGEXIT("Parser '%s' built with different version of arkime.h\n %d %d", name, ARKIME_API_VERSION, apiversion);
+    }
+
+    if (!match && matchlen != 0)
+        CONFIGEXIT("Can't have a null match for %s", name);
+
+    ArkimeClassify_t *c = ARKIME_TYPE_ALLOC0(ArkimeClassify_t);
+    c->name     = name;
+    c->uw       = uw;
+    c->offset   = offset;
+    c->match    = match;
+    c->matchlen = matchlen;
+    c->minlen   = matchlen + offset;
+    c->func     = func;
+
+    if (config.debug > 1) {
+        char hex[1000];
+        arkime_sprint_hex_string(hex, match, matchlen);
+        LOG("adding %s matchlen:%d offset:%d match %.*s (0x%s)", name, matchlen, offset, matchlen, match, hex);
+    }
+    if (matchlen == 0 || offset != 0) {
+        arkime_parsers_classifier_add(&classifersSctp0, c);
+    } else if (matchlen == 1) {
+        arkime_parsers_classifier_add(&classifersSctp1[(uint8_t)match[0]], c);
+    } else  {
+        c->match += 2;
+        c->matchlen -= 2;
+        arkime_parsers_classifier_add(&classifersSctp2[(uint8_t)match[0]][(uint8_t)match[1]], c);
+    }
+}
+/******************************************************************************/
+void arkime_parsers_classifier_register_sctp_protocol_internal(const char *name, void *uw, uint32_t protocol, ArkimeClassifyFunc func, size_t sessionsize, int apiversion)
+{
+    if (sizeof(ArkimeSession_t) != sessionsize) {
+        CONFIGEXIT("Parser '%s' built with different version of arkime.h\n %u != %u", name, (unsigned int)sizeof(ArkimeSession_t),  (unsigned int)sessionsize);
+    }
+
+    if (ARKIME_API_VERSION != apiversion) {
+        CONFIGEXIT("Parser '%s' built with different version of arkime.h\n %d %d", name, ARKIME_API_VERSION, apiversion);
+    }
+
+    if (protocol > 255) {
+        CONFIGEXIT("Parser '%s' protocol must be 0-255", name);
+    }
+
+    ArkimeClassify_t *c = ARKIME_TYPE_ALLOC0(ArkimeClassify_t);
+    c->name     = name;
+    c->uw       = uw;
+    c->func     = func;
+
+    if (config.debug > 1) {
+        LOG("adding %s protocol:%u", name, protocol);
+    }
+
+    arkime_parsers_classifier_add(&classifersSctpProtocol[protocol], c);
 }
 /******************************************************************************/
 void arkime_parsers_classify_udp(ArkimeSession_t *session, const uint8_t *data, int remaining, int which)
@@ -1162,7 +1259,7 @@ void arkime_parsers_classify_tcp(ArkimeSession_t *session, const uint8_t *data, 
     }
 
     for (i = 0; i < classifersTcp1[data[0]].cnt; i++) {
-        classifersTcp1[data[0]].arr[i]->func(session, data, remaining, which, classifersTcp1[data[0]].arr[i]);
+        classifersTcp1[data[0]].arr[i]->func(session, data, remaining, which, classifersTcp1[data[0]].arr[i]->uw);
     }
 
     for (i = 0; i < classifersTcp2[data[0]][data[1]].cnt; i++) {
@@ -1176,13 +1273,66 @@ void arkime_parsers_classify_tcp(ArkimeSession_t *session, const uint8_t *data, 
     if (config.yara && !config.yaraEveryPacket && !session->stopYara)
         arkime_yara_execute(session, data, remaining, 0);
 }
+/******************************************************************************/
+void arkime_parsers_classify_sctp(ArkimeSession_t *session, uint32_t protocol, const uint8_t *data, int remaining, int which)
+{
+    int i;
+
+#ifdef DEBUG_PARSERS
+    char buf[101];
+    LOG("len: %d direction: %d hex: %s data: %.*s", remaining, which, arkime_sprint_hex_string(buf, data, MIN(remaining, 50)), MIN(remaining, 50), data);
+#endif
+
+    if (remaining < 2)
+        return;
+
+    if (protocol < 256) {
+        for (i = 0; i < classifersSctpProtocol[protocol].cnt; i++) {
+            classifersSctpProtocol[protocol].arr[i]->func(session, data, remaining, which, classifersSctpProtocol[protocol].arr[i]->uw);
+        }
+    }
+
+    for (i = 0; i < classifersSctpPortSrc[session->port1].cnt; i++) {
+        classifersSctpPortSrc[session->port1].arr[i]->func(session, data, remaining, which, classifersSctpPortSrc[session->port1].arr[i]->uw);
+    }
+
+    for (i = 0; i < classifersSctpPortDst[session->port2].cnt; i++) {
+        classifersSctpPortDst[session->port2].arr[i]->func(session, data, remaining, which, classifersSctpPortDst[session->port2].arr[i]->uw);
+    }
+
+    for (i = 0; i < classifersSctp0.cnt; i++) {
+        ArkimeClassify_t *c = classifersSctp0.arr[i];
+        if (remaining >= c->minlen && memcmp(data + c->offset, c->match, c->matchlen) == 0) {
+            c->func(session, data, remaining, which, c->uw);
+        }
+    }
+
+    for (i = 0; i < classifersSctp1[data[0]].cnt; i++) {
+        classifersSctp1[data[0]].arr[i]->func(session, data, remaining, which, classifersSctp1[data[0]].arr[i]->uw);
+    }
+
+    for (i = 0; i < classifersSctp2[data[0]][data[1]].cnt; i++) {
+        ArkimeClassify_t *c = classifersSctp2[data[0]][data[1]].arr[i];
+        if (remaining >= c->minlen && memcmp(data + 2, c->match, c->matchlen) == 0) {
+            c->func(session, data, remaining, which, c->uw);
+        }
+    }
+
+    arkime_rules_run_after_classify(session);
+    if (config.yara && !config.yaraEveryPacket && !session->stopYara)
+        arkime_yara_execute(session, data, remaining, 0);
+}
 
 /******************************************************************************/
 uint32_t arkime_parsers_add_named_func(const char *name, ArkimeParsersNamedFunc func)
 {
+    if (!namedFuncsHash)
+        namedFuncsHash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
     ArkimeNamedInfo_t *info = g_hash_table_lookup(namedFuncsHash, name);
     if (!info) {
         info = ARKIME_TYPE_ALLOC0(ArkimeNamedInfo_t);
+        info->funcs = g_ptr_array_new();
         namedFuncsMax++; // Don't use 0
         if (namedFuncsMax >= MAX_NAMED_FUNCS) {
             LOGEXIT("ERROR - Too many named functions %s", name);
@@ -1192,15 +1342,22 @@ uint32_t arkime_parsers_add_named_func(const char *name, ArkimeParsersNamedFunc 
         namedFuncsArr[namedFuncsMax] = info;
         g_hash_table_insert(namedFuncsHash, g_strdup(name), info);
     }
+
+    if (!func)
+        return info->id;
+
     arkime_parsers_has_named_func |= (1ULL << info->id);
-    if (!info->funcs)
-        info->funcs = g_ptr_array_new();
-    g_ptr_array_add(info->funcs, func);
+    ArkimeNamedFunc_t *funcInfo = ARKIME_TYPE_ALLOC0(ArkimeNamedFunc_t);
+    funcInfo->cb = func;
+    g_ptr_array_add(info->funcs, funcInfo);
     return info->id;
 }
 /******************************************************************************/
-uint32_t arkime_parsers_get_named_func(const char *name)
+uint32_t arkime_parsers_add_named_func2(const char *name, ArkimeParsersNamedFunc2 func, void *cbuw)
 {
+    if (!namedFuncsHash)
+        namedFuncsHash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
     ArkimeNamedInfo_t *info = g_hash_table_lookup(namedFuncsHash, name);
     if (!info) {
         info = ARKIME_TYPE_ALLOC0(ArkimeNamedInfo_t);
@@ -1214,6 +1371,15 @@ uint32_t arkime_parsers_get_named_func(const char *name)
         namedFuncsArr[namedFuncsMax] = info;
         g_hash_table_insert(namedFuncsHash, g_strdup(name), info);
     }
+
+    if (!func)
+        return info->id;
+
+    arkime_parsers_has_named_func |= (1ULL << info->id);
+    ArkimeNamedFunc_t *funcInfo = ARKIME_TYPE_ALLOC0(ArkimeNamedFunc_t);
+    funcInfo->cb2 = func;
+    funcInfo->cbuw = cbuw;
+    g_ptr_array_add(info->funcs, funcInfo);
     return info->id;
 }
 /******************************************************************************/
@@ -1223,7 +1389,11 @@ void arkime_parsers_call_named_func(uint32_t id, ArkimeSession_t *session, const
         return;
     ArkimeNamedInfo_t *info = namedFuncsArr[id];
     for (int i = 0; i < (int)info->funcs->len; i++) {
-        ArkimeParsersNamedFunc func = g_ptr_array_index(info->funcs, i);
-        func(session, data, len, uw);
+        ArkimeNamedFunc_t *funcInfo = g_ptr_array_index(info->funcs, i);
+        if (funcInfo->cbuw) {
+            funcInfo->cb2(session, data, len, uw, funcInfo->cbuw);
+        } else {
+            funcInfo->cb(session, data, len, uw);
+        }
     }
 }

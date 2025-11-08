@@ -1,4 +1,4 @@
-use Test::More tests => 94;
+use Test::More tests => 102;
 use Cwd;
 use URI::Escape;
 use ArkimeTest;
@@ -154,9 +154,19 @@ tcp,1386004309468,1386004309478,10.180.156.185,53533,US,10.180.156.249,1080,US,2
 1386004317979,1386004317989,10.180.156.185,US,10.180.156.249,US,17,test,0,6,"AS15133 MCI Communications Services, Inc. d/b/a Verizon Business"
 ', "CSV Expression");
 
+# csv unknown view
+    my $csv = getBinary("/sessions.csv?view=unknown&date=-1&expression=" . uri_escape("file=$pwd/socks-http-example.pcap"))->content;
+    $csv =~ s/\r//g;
+    eq_or_diff ($csv, 'Could not build query.  Err: Can\'t find view');
+
+    my $csv = getBinary("/sessions.csv?view=unknown&fields=firstPacket,lastPacket,source.ip,source.geo.country_iso_code,destination.ip,destination.geo.country_iso_code,network.packets,node,tcpflags.rst,tcpflags.psh,socks.ASN&date=-1&expression=" . uri_escape("file=$pwd/socks-http-example.pcap"))->content;
+    $csv =~ s/\r//g;
+    eq_or_diff ($csv, 'Could not build query.  Err: Can\'t find view');
+
 
 # bigendian pcap fs tests
     my $json = get("/sessions.json?date=-1&fields=fileId&expression=" . uri_escape("file=$pwd/bigendian.pcap"));
+    ok (exists $json->{data}->[0]->{nodehost}, "requires nodehost");
     ok ($json->{data}->[0]->{fileId}->[0] =~ /bigendian.pcap/, "correct fs");
 
 # bigendian pcap fs tests 2 fields
@@ -250,3 +260,8 @@ tcp,1386004309468,1386004309478,10.180.156.185,53533,US,10.180.156.249,1080,US,2
 
     $json = viewerPost("/api/sessions/send", "remoteCluster=unknown");
     eq_or_diff($json, from_json('{"success":false,"text":"Unknown cluster"}'));
+
+# Check twice in a row to make sure sort working
+    my $json1 = post("/api/sessions", '{"flatten":1,"length":50,"facets":1,"bounding":"last","interval":"auto","cancelId":"47ad2fc7-2f95-43b1-95eb-1704f248e821","date":"-1","order":"lastPacket:desc","fields":"ipProtocol,firstPacket,lastPacket,source.ip,source.geo.country_iso_code,source.port,destination.ip,destination.geo.country_iso_code,destination.port,network.packets,totDataBytes,network.bytes,node,protocol,tags,http.uri,email.src,email.dst,email.subject,email.filename,dns.host,cert.alt,irc.channel"}');
+    my $json2 = post("/api/sessions", '{"flatten":1,"length":50,"facets":1,"bounding":"last","interval":"auto","cancelId":"47ad2fc7-2f95-43b1-95eb-1704f248e821","date":"-1","order":"lastPacket:desc","fields":"ipProtocol,firstPacket,lastPacket,source.ip,source.geo.country_iso_code,source.port,destination.ip,destination.geo.country_iso_code,destination.port,network.packets,totDataBytes,network.bytes,node,protocol,tags,http.uri,email.src,email.dst,email.subject,email.filename,dns.host,cert.alt,irc.channel"}');
+    eq_or_diff($json1, $json2);

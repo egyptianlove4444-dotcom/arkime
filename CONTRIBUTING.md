@@ -50,7 +50,47 @@ For more information about running the Arkime Viewer web application, visit the 
 
 #### Documentation! :page_with_curl:
 
-Documentation, READMEs, examples, and FAQs are important. Please help improve and add to them.
+Documentation, READMEs, examples, translations, and FAQs are important. Please help improve and add to them.
+
+#### Internationalization (i18n) :globe_with_meridians:
+
+Arkime supports internationalization to make the application accessible to users worldwide. We welcome contributions for new language translations and improvements to existing ones.
+
+**How to contribute to internationalization:**
+
+* **New Language Translations**: Add support for new languages by creating translation files
+* **Improve Existing Translations**: Fix or enhance translations in supported languages (they were originally created by Cursor using Claude 4 Sonnet)
+* **Translation Guidelines**: Follow our translation standards for consistency
+
+**Currently supported languages:**
+* 🇺🇸 English (en) - Default
+* 🇪🇸 Spanish (es)
+* 🇫🇷 French (fr)
+* 🇩🇪 German (de)
+* 🇯🇵 Japanese (ja)
+* 🇰🇷 Korean (ko)
+* 🇨🇳 Chinese (zh)
+
+**Getting started with translations:**
+1. Read the comprehensive [Internationalization Guide](INTERNATIONALIZATION.md)
+2. Check existing translation files in `common/vueapp/locales/`
+3. Test your translations using the language switcher component
+4. Follow Vue I18n best practices documented in our guide
+
+**For new language support:**
+1. Create a new locale file in `common/vueapp/locales/` (e.g., `pt.json` for Portuguese)
+2. Add all required translation keys with accurate translations
+3. Update the shared LanguageSwitcher component to include the new language
+4. Add the language to the i18n configuration in each application's `main.js`
+5. Test thoroughly across different UI components and applications
+
+**Translation quality guidelines:**
+* Use native speakers or professional translators when possible
+* Maintain consistency in terminology across the application
+* Consider cultural context and technical domain-specific terms
+* Test translations in the actual UI to ensure proper fit and readability
+
+See our [Internationalization Guide](INTERNATIONALIZATION.md) for detailed implementation instructions, usage examples, and best practices.
 
 #### Bugs :bug: :beetle: :ant:
 
@@ -83,6 +123,8 @@ Feature requests are tracked as [GitHub Issues](https://guides.github.com/featur
 
 **We welcome all collaboration!** If you can fix it or implement it, please do! :hammer:
 To implement something new, please create an issue first so we can discuss it together.
+
+**Git hooks** (optional but recommended): Install local git hooks to catch common issues before commit/push: `git config --local core.hooksPath .githooks/` - See [`.githooks/README.md`](.githooks/README.md) for details.
 
 **To better help us review your pull request, please follow these guidelines:**
 * Provide a clear and descriptive title
@@ -134,7 +176,7 @@ We encourage inclusive and professional interactions on our project. We welcome 
 ---
 
 ### Building a release
-1. Create a branch
+1. Create a branch named release-vM.M.B
    1. Update CHANGELOG with correct date
    2. Update AC_INIT in configure.ac with correct version
    3. Update ARKIME_API_VERSION in capture/arkime.h when incompatible C API changes
@@ -148,7 +190,7 @@ We encourage inclusive and professional interactions on our project. We welcome 
 8. Click "Run workflow" button
 9. AFTER everything finishes, update the release notes https://github.com/arkime/arkime/releases/
 10. Profit!
-11. Edit CHANGELOG and configure.ac with the next version when ready
+11. Edit CHANGELOG and configure.ac with the next version when ready, use branch named start-vM.M.B
 
 ---
 
@@ -160,14 +202,11 @@ We encourage inclusive and professional interactions on our project. We welcome 
   4. Run the 2 exports and the docker image build manually
   5. Repeat steps 3-5 until successful
   6. Run docker push
-2. Update .github/workflows/build\*.yml
-  1. In matrix section add a new section for the OS
-  2. Add the name of the new section from 1 to matrix.version array
+2. Update .github/workflows/versions
+  1. Add a new section for the OS, need 2 sections if both amd and arm
+  2. Optionally update the build.yml and release.yml for new features
   3. Test
-3. Update .github/workflows/release
-  1. In matrix section add a new section for the OS
-  2. Add the name of the new section from 2 to matrix.version array
-4. Update CHANGELOG
+3. Update CHANGELOG
 
 
 ---

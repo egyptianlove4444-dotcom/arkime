@@ -20,6 +20,7 @@
                "ICANN, IANA Department"
             ],
             "dstOuiCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1335958313152,
             "icmp" : {
@@ -35,6 +36,7 @@
             "length" : 4376,
             "network" : {
                "bytes" : 196,
+               "community_id" : "1:u15ZSE/zwPPH+PdNHE0LOby1NF0=",
                "packets" : 2
             },
             "node" : "test",
@@ -56,6 +58,10 @@
             },
             "source" : {
                "bytes" : 196,
+               "geo" : {
+                  "city_name" : "City",
+                  "region_iso_code" : "REG"
+               },
                "ip" : "192.168.177.160",
                "mac" : [
                   "00:21:28:05:29:ba"
@@ -69,6 +75,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcRIR" : "ARIN",
+            "srcTTL" : [
+               255
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 128
          },
          "header" : {

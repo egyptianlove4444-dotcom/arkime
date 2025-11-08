@@ -11,12 +11,22 @@ my $VERSION = $ARGV[0];
 
 chdir "../viewer/public";
 
-system "wget -N https://github.com/gchq/CyberChef/releases/download/v$VERSION/CyberChef_v$VERSION.zip";
+system "wget -nv -N https://github.com/gchq/CyberChef/releases/download/v$VERSION/CyberChef_v$VERSION.zip";
 system "unzip -o CyberChef_v$VERSION.zip CyberChef_v$VERSION.html";
 
 open my $fh, '<', "CyberChef_v$VERSION.html" or die "Can't open file $!";
 my $html = do { local $/; <$fh> };
 close($fh);
+
+my $beforescript = q|
+<script>
+    let safehref = window.location.href.replace(/%3[cC]/g, '%26lt;');
+    if (window.location.href !== safehref) {
+      console.log("Hacker", window.location.href, safehref);
+      window.location.href = safehref;
+    }
+</script>
+|;
 
 my $script = q|
   <script>
@@ -77,13 +87,14 @@ $html =~ s|<head>|<head>\n<base href="./cyberchef/" /><meta name="referrer" cont
 $html =~ s|</body>|$script</body>|;
 
 open my $fh, '>', "cyberchef.html" or die "Can't open file $!";
+print $fh $beforescript;
 print $fh $html;
 print $fh "\n";
 close $fh;
 
 unlink "CyberChef_v$VERSION.html";
 
-system "perl -pi -e 's/v.*\\/CyberChef_v.*.zip/v$VERSION\\/CyberChef_v$VERSION.zip/g' ../Makefile.in";
+system "perl -pi -e 's/^CYBERCHEF_VERSION.*/CYBERCHEF_VERSION=$VERSION/g' ../Makefile.in";
 system qq{perl -pi -e "s/CYBERCHEFVERSION.*,/CYBERCHEFVERSION: '$VERSION',/g" ../internals.js};
 
 system "vim ../../CHANGELOG";

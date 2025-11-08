@@ -106,7 +106,7 @@ class MiscAPIs {
    * @returns {number} recordsFiltered - The number of files returned in this result
    */
   static getFiles (req, res) {
-    const columns = ['num', 'node', 'name', 'locked', 'first', 'filesize', 'encoding', 'packetPosEncoding', 'packets', 'packetsSize', 'uncompressedBits', 'compression'];
+    const columns = ['num', 'node', 'name', 'locked', 'first', 'filesize', 'encoding', 'packetPosEncoding', 'packets', 'packetsSize', 'uncompressedBits', 'compression', 'firstTimestamp', 'lastTimestamp', 'startTimestamp', 'finishTimestamp', 'sessionsStarted', 'sessionsPresent'];
 
     const query = {
       _source: columns,
@@ -126,7 +126,7 @@ class MiscAPIs {
     ViewerUtils.addCluster(req.query.cluster, query);
 
     Promise.all([
-      Db.search('files', 'file', query),
+      Db.searchScroll('files', 'file', query),
       Db.numberOfDocuments('files', { cluster: req.query.cluster })
     ]).then(([files, total]) => {
       if (files.error) { throw files.error; }
@@ -153,30 +153,6 @@ class MiscAPIs {
     }).catch((err) => {
       console.log(`ERROR - ${req.method} /api/files`, util.inspect(err, false, 50));
       return res.send({ recordsTotal: 0, recordsFiltered: 0, data: [] });
-    });
-  };
-
-  // --------------------------------------------------------------------------
-  /**
-   * GET - /api/:nodeName/:fileNum/filesize
-   *
-   * Retrieves the filesize of a PCAP file.
-   * @name /:nodeName/:fileNum/filesize
-   * @returns {number} filesize - The size of the file (-1 if the file cannot be found).
-   */
-  static getFileSize (req, res) {
-    Db.fileIdToFile(req.params.nodeName, req.params.fileNum, (file) => {
-      if (!file) {
-        return res.send({ filesize: -1 });
-      }
-
-      fs.stat(file.name, (err, stats) => {
-        if (err || !stats) {
-          return res.send({ filesize: -1 });
-        } else {
-          return res.send({ filesize: stats.size });
-        }
-      });
     });
   };
 

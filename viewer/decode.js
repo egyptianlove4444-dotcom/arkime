@@ -281,7 +281,8 @@ class ItemSMTPStream extends ItemTransform {
     data: 3,
     mime: 4,
     mime_data: 5,
-    ignore: 6
+    starttls: 6,
+    ignore: 7
   };
 
   constructor (options) {
@@ -350,7 +351,7 @@ class ItemSMTPStream extends ItemTransform {
           header = '';
           boundaries = {};
         } else if (lines[l].toUpperCase() === 'STARTTLS') {
-          state = ItemSMTPStream.STATES.ignore;
+          state = ItemSMTPStream.STATES.starttls;
         }
         break;
       case ItemSMTPStream.STATES.header:
@@ -461,6 +462,14 @@ class ItemSMTPStream extends ItemTransform {
         }
 
         this.buffers.push(lines[l]);
+        break;
+      case ItemSMTPStream.STATES.starttls:
+        if (lines[l].startsWith('EHLO ')) {
+          state = ItemSMTPStream.STATES.cmd;
+          l--;
+        } else {
+          state = ItemSMTPStream.STATES.ignore;
+        }
         break;
       }
     }
@@ -612,6 +621,9 @@ class ItemHTTPStream extends ItemTransform {
         if (this.code / 100 === 1 || this.code === 204 || this.code === 304) {
           this.states[item.client] = ItemHTTPStream.STATES.start;
         } else if (this.method === undefined) {
+          if (this.contentLength[item.client] > 0) {
+            this.states[item.client] = ItemHTTPStream.STATES.res_body;
+          }
         } else if (this.method.match(/^(CONNECT)$/)) {
           this.states[item.client] = ItemHTTPStream.STATES.pass;
         } else if (this.transferEncoding[item.client] === 'CHUNKED') {

@@ -10,13 +10,13 @@
 
 const express = require('express');
 const fs = require('fs');
-const glob = require('glob');
 const async = require('async');
 const sprintf = require('./sprintf.js').sprintf;
-const iptrie = require('iptrie');
+const iptrie = require('arkime-iptrie');
 const User = require('../common/user');
 const Auth = require('../common/auth');
 const ArkimeUtil = require('../common/arkimeUtil');
+const Locales = require('../common/locales');
 const WISESource = require('./wiseSource.js');
 const cluster = require('cluster');
 const cryptoLib = require('crypto');
@@ -40,6 +40,7 @@ const internals = {
   fields: [],
   fieldsSize: 0,
   sources: new Map(),
+  webBasePath: '/',
   configDefs: {
     wiseService: {
       description: 'General settings that apply to WISE and all wise sources',
@@ -59,7 +60,8 @@ const internals = {
         { name: 'usersElasticsearchBasicAuth', required: false, help: 'OpenSearch/Elastisearch Basic Auth', password: true },
         { name: 'userAuthIps', required: false, help: 'Comma separated list of CIDRs to allow authed requests from' },
         { name: 'usersPrefix', required: false, help: 'The prefix used with db.pl --prefix for users OpenSearch/Elasticsearch, if empty arkime_ is used' },
-        { name: 'sourcePath', required: false, help: 'Where to look for the source files. Defaults to "./"' }
+        { name: 'sourcePath', required: false, help: 'Where to look for the source files. Defaults to "./"' },
+        { name: 'webBasePath', required: false, help: 'The base URL to wise requeests, must end with slash. Defaults to "/"' }
       ]
     },
     cache: {
@@ -101,15 +103,18 @@ function processArgs (argv) {
         process.exit(1);
       }
 
-      ArkimeConfig.setOverride(process.argv[i].slice(0, equal), process.argv[i].slice(equal + 1));
+      const key = process.argv[i].slice(0, equal);
+      const value = process.argv[i].slice(equal + 1);
+      if (key.includes('.')) {
+        ArkimeConfig.setOverride(key, value);
+      } else {
+        ArkimeConfig.setOverride('wiseService.' + key, value);
+      }
     } else if (argv[i] === '--webcode') {
       i++;
       internals.configCode = argv[i];
     } else if (argv[i] === '--webconfig') {
       internals.webconfig = true;
-      console.log(chalk.cyan(
-        `${chalk.bgCyan.black('IMPORTANT')} - Config pin code is: ${internals.configCode}`
-      ));
     } else if (argv[i] === '--workers') {
       i++;
       internals.workers = +argv[i];
@@ -121,11 +126,17 @@ function processArgs (argv) {
       console.log('  -o <section>.<key>=<value>  Override the config file');
       console.log('  --debug                     Increase debug level, multiple are supported');
       console.log('  --webconfig                 Allow the config to be edited from web page');
+      console.log('  --webcode <code>            Set the web config code instead of random');
       console.log('  --workers <b>               Number of worker processes to create');
       console.log('  --insecure                  Disable certificate verification for https calls');
 
       process.exit(0);
     }
+  }
+  if (internals.webconfig) {
+    console.log(chalk.cyan(
+      `${chalk.bgCyan.black('IMPORTANT')} - Config pin code is: ${internals.configCode}`
+    ));
   }
 }
 
@@ -171,9 +182,11 @@ const cspDirectives = {
   // web worker required for json editor (https://github.com/dirkliu/vue-json-editor)
   workerSrc: ["'self'", 'blob:']
 };
-const cspHeader = helmet.contentSecurityPolicy({
-  directives: cspDirectives
-});
+const cspHeader = (process.env.NODE_ENV === 'development')
+  ? (_req, _res, next) => { next(); }
+  : helmet.contentSecurityPolicy({
+    directives: cspDirectives
+  });
 
 // Explicit sigint handler for running under docker
 // See https://github.com/nodejs/node/issues/4182
@@ -185,23 +198,35 @@ process.on('SIGINT', function () {
 function setupAuth () {
   Auth.initialize({
     appAdminRole: 'wiseAdmin',
-    passwordSecretSection: 'wiseService'
+    passwordSecretSection: 'wiseService',
+    basePath: internals.webBasePath
   });
 
   if (Auth.mode === 'anonymous') {
     return;
   }
 
-  const es = ArkimeConfig.getArray('usersElasticsearch', 'http://localhost:9200');
-
-  User.initialize({
-    insecure: ArkimeConfig.insecure,
-    node: es,
-    caTrustFile: ArkimeConfig.get('caTrustFile'),
-    prefix: ArkimeConfig.get('usersPrefix'),
-    apiKey: ArkimeConfig.get('usersElasticsearchAPIKey'),
-    basicAuth: ArkimeConfig.get('usersElasticsearchBasicAuth')
-  });
+  if (ArkimeConfig.get('usersElasticsearch')) {
+    const es = ArkimeConfig.getArray('usersElasticsearch');
+    User.initialize({
+      insecure: ArkimeConfig.isInsecure([es]),
+      node: ArkimeConfig.getArray('usersElasticsearch'),
+      caTrustFile: ArkimeConfig.get('caTrustFile'),
+      prefix: ArkimeConfig.get('usersPrefix'),
+      apiKey: ArkimeConfig.get('usersElasticsearchAPIKey'),
+      basicAuth: ArkimeConfig.get('usersElasticsearchBasicAuth')
+    });
+  } else {
+    const es = ArkimeConfig.getArray('elasticsearch', 'http://localhost:9200');
+    User.initialize({
+      insecure: ArkimeConfig.isInsecure([es]),
+      node: es,
+      caTrustFile: ArkimeConfig.get('caTrustFile'),
+      prefix: ArkimeConfig.get('prefix'),
+      apiKey: ArkimeConfig.get('elasticsearchAPIKey'),
+      basicAuth: ArkimeConfig.get('elasticsearchBasicAuth')
+    });
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -560,15 +585,14 @@ class WISESourceAPI {
 }
 // ----------------------------------------------------------------------------
 function loadSources () {
-  glob(ArkimeConfig.get('sourcePath', path.join(__dirname, '/')) + 'source.*.js', (err, files) => {
-    files.forEach((file) => {
-      try {
-        const src = require(file);
-        src.initSource(internals.sourceApi);
-      } catch (err) {
-        console.log(`WARNING - Couldn't load ${file}\n`, err);
-      }
-    });
+  const files = fs.globSync(ArkimeConfig.get('sourcePath', path.join(__dirname, '/')) + 'source.*.js');
+  files.forEach((file) => {
+    try {
+      const src = require(file);
+      src.initSource(internals.sourceApi);
+    } catch (err) {
+      console.log(`WARNING - Couldn't load ${file}\n`, err);
+    }
   });
 
   // ALW - should really merge all the types somehow here instead of type2Name
@@ -598,6 +622,14 @@ function loadSources () {
 ArkimeUtil.logger(app);
 app.use(timeout(5 * 1000));
 
+// ----------------------------------------------------------------------------
+app.use((req, res, next) => {
+  if (internals.webBasePath !== '/' && req.url.startsWith(internals.webBasePath)) {
+    req.url = req.url.substring(internals.webBasePath.length - 1);
+  }
+  return next();
+});
+
 // client static files --------------------------------------------------------
 app.use(favicon(path.join(__dirname, '/favicon.ico')));
 
@@ -608,7 +640,11 @@ app.use('/font-awesome', express.static(
   { maxAge: dayMs, fallthrough: false }
 ), ArkimeUtil.missingResource);
 app.use('/assets', express.static(
-  path.join(__dirname, '/../assets'),
+  path.join(__dirname, 'vueapp/dist/assets'),
+  { maxAge: dayMs, fallthrough: true }
+));
+app.use(['/assets', '/logos'], express.static(
+  path.join(__dirname, '../assets'),
   { maxAge: dayMs, fallthrough: false }
 ), ArkimeUtil.missingResource);
 
@@ -817,7 +853,7 @@ function addType (type, newSrc) {
 }
 // ----------------------------------------------------------------------------
 function processQuery (req, query, cb) {
-  if (query.typeName === '__proto__') {
+  if (ArkimeUtil.isPP(query.typeName)) {
     return cb('__proto__ invalid type name');
   }
 
@@ -1026,7 +1062,7 @@ app.post('/get', function (req, res) {
         }
 
         if (!typeName) {
-          console.log('Couldn\'t find typeName');
+          console.log(`Couldn't find typeName`);
           throw new Error('Could not make out typeName from query');
         }
 
@@ -1080,6 +1116,18 @@ app.get('/sources', [ArkimeUtil.noCacheJson], (req, res) => {
 app.get('/config/defs', [ArkimeUtil.noCacheJson], function (req, res) {
   return res.send(internals.configDefs);
 });
+// ----------------------------------------------------------------------------
+/**
+ * GET - Retrieve all available locale files for internationalization
+ *
+ * @name "/api/locales"
+ * @returns {object} Object containing all locale data
+ */
+app.get(
+  ['/api/locales'],
+  [ArkimeUtil.noCacheJson],
+  Locales.getLocales
+);
 // ----------------------------------------------------------------------------
 /**
  * GET - Used by the wise UI to all the types known (unathenticated).
@@ -1252,7 +1300,7 @@ app.get('/stats', [ArkimeUtil.noCacheJson], (req, res) => {
   const stats = { types: [], sources: [], startTime: internals.startTime };
 
   let re2;
-  if (req.query.search) {
+  if (ArkimeUtil.isString(req.query.search)) {
     re2 = new RE2(req.query.search.toLowerCase());
   }
 
@@ -1354,7 +1402,7 @@ function isWiseAdmin (req, res, next) {
   if (req.user.hasRole('wiseAdmin')) {
     return next();
   } else {
-    console.log(`${req.userId} is not wiseAdmin`);
+    console.log(`${req.user.userId} is not wiseAdmin`);
     return res.send(JSON.stringify({ success: false, text: 'Not authorized, check log file' }));
   }
 }
@@ -1364,7 +1412,7 @@ function isWiseUser (req, res, next) {
   if (req.user.hasRole('wiseUser')) {
     return next();
   } else {
-    console.log(`${req.userId} is not wiseUser`);
+    console.log(`${req.user.userId} is not wiseUser`);
     return res.send(JSON.stringify({ success: false, text: 'Not authorized, check log file' }));
   }
 }
@@ -1546,33 +1594,34 @@ app.use(ArkimeUtil.expressErrorHandler);
 // ============================================================================
 // VUE APP
 // ============================================================================
-const Vue = require('vue');
-const vueServerRenderer = require('vue-server-renderer');
+// loads the manifest.json file from dist and inject it in the ejs template
+const parseManifest = () => {
+  if (process.env.NODE_ENV === 'development') return {};
 
-// Factory function to create fresh Vue apps
-function createApp () {
-  return new Vue({
-    template: '<div id="app"></div>'
-  });
-}
+  const manifestPath = path.join(path.resolve(), 'vueapp/dist/.vite/manifest.json');
+  const manifestFile = fs.readFileSync(manifestPath, 'utf-8');
+
+  return JSON.parse(manifestFile);
+};
+const manifest = parseManifest();
 
 // Send back vue for every other request
 app.use(cspHeader, (req, res, next) => {
-  const renderer = vueServerRenderer.createRenderer({
-    template: fs.readFileSync(path.join(__dirname, '/vueapp/dist/index.html'), 'utf-8')
-  });
+  const footerConfig = ArkimeConfig.get('footerTemplate', '_version_ | <a href="https://arkime.com/wise">arkime.com/wise</a>')
+    .replace(/_version_/g, `WISE v${version.version}`);
 
   const appContext = {
-    logoutUrl: Auth.logoutUrl,
+    manifest,
+    path: internals.webBasePath,
     nonce: res.locals.nonce,
-    version: version.version
+    version: version.version,
+    footerConfig,
+    logoutUrl: Auth.logoutUrl(req),
+    logoutUrlMethod: Auth.logoutUrlMethod,
+    environment: process.env.NODE_ENV
   };
 
-  // Create a fresh Vue app instance
-  const vueApp = createApp();
-
-  // Render the Vue instance to HTML
-  renderer.renderToString(vueApp, appContext, (err, html) => {
+  res.render('index.html.ejs', appContext, (err, html) => {
     if (err) {
       console.log('ERROR - fetching vue index page:', err);
       if (err.code === 404) {
@@ -1620,6 +1669,7 @@ async function buildConfigAndStart () {
   });
 
   internals.updateTime = ArkimeConfig.get('updateTime', 0);
+  internals.webBasePath = ArkimeConfig.get('webBasePath', '/');
 
   // Check if we need to restart, this is if there are multiple instances
   setInterval(async () => {

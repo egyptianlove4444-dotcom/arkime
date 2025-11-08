@@ -26,12 +26,24 @@
                "packets" : 3,
                "port" : 80
             },
+            "dot1q" : {
+               "id" : [
+                  "200",
+                  "201"
+               ],
+               "idCnt" : 2
+            },
             "dstOui" : [
                "Fortinet Inc."
             ],
             "dstOuiCnt" : 1,
             "dstPayload8" : "485454502f312e31",
             "dstRIR" : "TEST",
+            "dstTTL" : [
+               54
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1456042921641,
             "http" : {
@@ -166,8 +178,8 @@
                "packets" : 6,
                "vlan" : {
                   "id" : [
-                     200,
-                     201
+                     201,
+                     200
                   ],
                   "id-cnt" : 2
                }
@@ -223,6 +235,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "474554202f204854",
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "dstip",
                "srcip"
@@ -238,6 +254,10 @@
                "syn" : 1,
                "syn-ack" : 1,
                "urg" : 0
+            },
+            "tcpseq" : {
+               "dst" : 0,
+               "src" : 3240623591
             },
             "test" : {
                "ASN" : [

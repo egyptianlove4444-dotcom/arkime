@@ -26,6 +26,12 @@
                "packets" : 2,
                "port" : 0
             },
+            "dot1q" : {
+               "id" : [
+                  23
+               ],
+               "idCnt" : 1
+            },
             "dstOui" : [
                "Cisco Systems, Inc"
             ],
@@ -52,6 +58,11 @@
                "APNIC"
             ],
             "dstRIR" : "ARIN",
+            "dstTTL" : [
+               255
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1402723255667,
             "icmp" : {
@@ -68,6 +79,7 @@
             "length" : 1,
             "network" : {
                "bytes" : 656,
+               "community_id" : "1:iF3HTcqmaP2JudVO9Vp3ktkojUY=",
                "packets" : 4,
                "vlan" : {
                   "id" : [
@@ -144,6 +156,10 @@
                "RIPE"
             ],
             "srcRIR" : "ARIN",
+            "srcTTL" : [
+               255
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "gretest-erspan"
             ],

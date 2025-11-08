@@ -36,6 +36,7 @@
                ],
                "typeCnt" : 2
             },
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1102274184317,
             "ipProtocol" : 17,
@@ -79,6 +80,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "0101060000003d1d",
+            "srcTTL" : [
+               250
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 544
          },
          "header" : {
@@ -128,6 +133,7 @@
             ],
             "dstOuiCnt" : 1,
             "dstRIR" : "ARIN",
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1102274184317,
             "ipProtocol" : 17,
@@ -172,6 +178,10 @@
             "srcOuiCnt" : 1,
             "srcPayload8" : "0201060000003d1d",
             "srcRIR" : "ARIN",
+            "srcTTL" : [
+               128
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 600
          },
          "header" : {

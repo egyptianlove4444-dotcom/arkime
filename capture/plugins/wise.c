@@ -101,7 +101,6 @@ typedef struct wiseitem {
 typedef struct wiseitem_head {
     struct wiseitem      *wih_next, *wih_prev;
     struct wiseitem      *wil_next, *wil_prev;
-    short                 wih_bucket;
     uint32_t              wih_count;
     uint32_t              wil_count;
 } WiseItemHead_t;
@@ -200,7 +199,7 @@ LOCAL void wise_load_fields()
     for (int i = 0; i < cnt; i++) {
         int len = 0;
         BSB_IMPORT_u16(bsb, len); // len includes NULL terminated
-        char *str = (char *)BSB_WORK_PTR(bsb);
+        const char *str = (char *)BSB_WORK_PTR(bsb);
         fieldsMap[0][i] = arkime_field_define_text(str, NULL);
         if (fieldsMap[0][i] == -1) {
             fieldsTS = 0;
@@ -313,7 +312,7 @@ LOCAL void wise_cb(int UNUSED(code), uint8_t *data, int data_len, gpointer uw)
         for (i = 0; i < cnt; i++) {
             int len = 0;
             BSB_IMPORT_u16(bsb, len); // len includes NULL terminated
-            char *str = (char *)BSB_WORK_PTR(bsb);
+            const char *str = (char *)BSB_WORK_PTR(bsb);
             fieldsMap[hashPos][i] = arkime_field_define_text(str, NULL);
             if (fieldsMap[hashPos][i] == -1) {
                 fieldsTS = 0;
@@ -534,7 +533,7 @@ cleanup:
         *colon = ':';
 }
 /******************************************************************************/
-void wise_lookup_ip(ArkimeSession_t *session, WiseRequest_t *request, struct in6_addr *ip6, int16_t matchPos)
+LOCAL void wise_lookup_ip(ArkimeSession_t *session, WiseRequest_t *request, struct in6_addr *ip6, int16_t matchPos)
 {
     char ipstr[INET6_ADDRSTRLEN + 100];
 
@@ -548,7 +547,7 @@ void wise_lookup_ip(ArkimeSession_t *session, WiseRequest_t *request, struct in6
     wise_lookup(session, request, ipstr, INTEL_TYPE_IP, matchPos);
 }
 /******************************************************************************/
-void wise_lookup_tuple(ArkimeSession_t *session, WiseRequest_t *request)
+LOCAL void wise_lookup_tuple(ArkimeSession_t *session, WiseRequest_t *request)
 {
     char    str[1000];
     BSB     bsb;
@@ -599,7 +598,7 @@ void wise_lookup_tuple(ArkimeSession_t *session, WiseRequest_t *request)
     wise_lookup(session, request, str, INTEL_TYPE_TUPLE, -1);
 }
 /******************************************************************************/
-void wise_lookup_url(ArkimeSession_t *session, WiseRequest_t *request, char *url, int16_t matchPos)
+LOCAL void wise_lookup_url(ArkimeSession_t *session, WiseRequest_t *request, char *url, int16_t matchPos)
 {
     // Skip leading http
     if (*url == 'h') {
@@ -643,7 +642,7 @@ LOCAL gboolean wise_flush(gpointer UNUSED(user_data))
 }
 /******************************************************************************/
 
-void wise_plugin_pre_save(ArkimeSession_t *session, int UNUSED(final))
+LOCAL void wise_plugin_pre_save(ArkimeSession_t *session, int UNUSED(final))
 {
     ArkimeString_t  *hstring = NULL;
     GHashTable      *ghash;
@@ -718,6 +717,7 @@ void wise_plugin_pre_save(ArkimeSession_t *session, int UNUSED(final))
                 wise_lookup(session, iRequest, buf, type, pos);
                 break;
             case ARKIME_FIELD_TYPE_INT_ARRAY:
+            case ARKIME_FIELD_TYPE_INT_ARRAY_UNIQUE:
                 for (i = 0; i < (int)session->fields[pos]->iarray->len; i++) {
                     snprintf(buf, sizeof(buf), "%u", g_array_index(session->fields[pos]->iarray, uint32_t, i));
                     wise_lookup(session, iRequest, buf, type, pos);
@@ -801,9 +801,9 @@ void wise_plugin_pre_save(ArkimeSession_t *session, int UNUSED(final))
                 g_hash_table_iter_init (&iter, ghash);
                 while (g_hash_table_iter_next (&iter, &ikey, NULL)) {
                     if (type == INTEL_TYPE_DOMAIN)
-                        wise_lookup_domain(session, iRequest, hstring->str, pos);
+                        wise_lookup_domain(session, iRequest, ikey, pos);
                     else if (type == INTEL_TYPE_URL)
-                        wise_lookup_url(session, iRequest, hstring->str, pos);
+                        wise_lookup_url(session, iRequest, ikey, pos);
                     else
                         wise_lookup(session, iRequest, ikey, type, pos);
                 }

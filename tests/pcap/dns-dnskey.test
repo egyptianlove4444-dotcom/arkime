@@ -35,11 +35,18 @@
                }
             ],
             "dnsCnt" : 1,
+            "dot1q" : {
+               "id" : [
+                  500
+               ],
+               "idCnt" : 1
+            },
             "dstOui" : [
                "Juniper Networks"
             ],
             "dstOuiCnt" : 1,
             "dstRIR" : "ARIN",
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1393428477365,
             "ipProtocol" : 17,
@@ -97,6 +104,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "f376011000010000",
+            "srcTTL" : [
+               61
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "srcip"
             ],

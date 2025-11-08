@@ -16,10 +16,21 @@
                "packets" : 1,
                "port" : 88
             },
+            "dot1q" : {
+               "id" : [
+                  50
+               ],
+               "idCnt" : 1
+            },
             "dstOui" : [
                "Juniper Networks"
             ],
             "dstOuiCnt" : 1,
+            "dstTTL" : [
+               124
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1466265698248,
             "initRTT" : 1,
@@ -88,6 +99,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "0000010d6a820109",
+            "srcTTL" : [
+               122
+            ],
+            "srcTTLCnt" : 1,
             "tcpflags" : {
                "ack" : 1,
                "dstZero" : 0,
@@ -98,6 +113,10 @@
                "syn" : 1,
                "syn-ack" : 1,
                "urg" : 0
+            },
+            "tcpseq" : {
+               "dst" : 0,
+               "src" : 2324607201
             },
             "totDataBytes" : 273
          },

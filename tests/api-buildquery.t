@@ -1,4 +1,4 @@
-use Test::More tests => 168;
+use Test::More tests => 172;
 use Cwd;
 use URI::Escape;
 use ArkimeTest;
@@ -205,7 +205,7 @@ doTest('host.http.cnt <= -1', '{"range":{"http.hostCnt":{"lte":-1}}}');
 doTest('host.http.cnt < -1', '{"range":{"http.hostCnt":{"lt":-1}}}');
 
 #### host
-doTest('host == thestring', '{"bool":{"should":[{"term":{"dhcp.host":"thestring"}},{"term":{"dns.queryHost":"thestring"}},{"term":{"dns.host":"thestring"}},{"term":{"dns.host":"thestring"}},{"term":{"dns.mailserverHost":"thestring"}},{"term":{"dns.nameserverHost":"thestring"}},{"match_phrase":{"dns.hostTokens":"thestring"}},{"term":{"dns.mailserverHost":"thestring"}},{"term":{"dns.nameserverHost":"thestring"}},{"term":{"email.host":"thestring"}},{"term":{"http.host":"thestring"}},{"term":{"quic.host":"thestring"}},{"term":{"smb.host":"thestring"}},{"term":{"socks.host":"thestring"}},{"term":{"oracle.host":"thestring"}}]}}');
+doTest('host == thestring', '{"bool":{"should":[{"term":{"dhcp.host":"thestring"}},{"term":{"dns.queryHost":"thestring"}},{"term":{"dns.host":"thestring"}},{"term":{"dns.mailserverHost":"thestring"}},{"term":{"dns.nameserverHost":"thestring"}},{"term":{"email.host":"thestring"}},{"term":{"http.host":"thestring"}},{"term":{"quic.host":"thestring"}},{"term":{"smb.host":"thestring"}},{"term":{"socks.host":"thestring"}},{"term":{"oracle.host":"thestring"}}]}}');
 doTest('host == $stringshort1', qq({"bool":{"should":[{"terms":{"dhcp.host":{"index":"tests_lookups","path":"string","id":"$stringshort1"}}},{"terms":{"dns.queryHost":{"id":"$stringshort1","index":"tests_lookups","path":"string"}}},{"terms":{"dns.host":{"id":"$stringshort1","index":"tests_lookups","path":"string"}}},{"terms":{"dnshostall":{"path":"string","index":"tests_lookups","id":"$stringshort1"}}},{"terms":{"dns.mailserverHost":{"index":"tests_lookups","path":"string","id":"$stringshort1"}}},{"terms":{"dns.nameserverHost":{"id":"$stringshort1","path":"string","index":"tests_lookups"}}},{"terms":{"email.host":{"path":"string","index":"tests_lookups","id":"$stringshort1"}}},{"terms":{"http.host":{"id":"$stringshort1","path":"string","index":"tests_lookups"}}},{"terms":{"quic.host":{"id":"$stringshort1","path":"string","index":"tests_lookups"}}},{"terms":{"smb.host":{"id":"$stringshort1","path":"string","index":"tests_lookups"}}},{"terms":{"socks.host":{"id":"$stringshort1","path":"string","index":"tests_lookups"}}},{"terms":{"oracle.host":{"index":"tests_lookups","path":"string","id":"$stringshort1"}}}]}}));
 
 #### wise.float
@@ -265,6 +265,12 @@ doTest('stoptime!=["2014/02/26 10:27:57", "2014-06-10T10:10:10-05:00"]', '{"bool
 
 doTest('stoptime==]"2014/02/26 10:27:57", "2014-06-10T10:10:10-05:00"[', '{"bool":{"filter":[{"range":{"lastPacket":{"lte":"2014-02-26T10:27:57-05:00","gte":"2014-02-26T10:27:57-05:00"}}},{"range":{"lastPacket":{"gte":"2014-06-10T11:10:10-04:00","lte":"2014-06-10T11:10:10-04:00"}}}]}}');
 doTest('stoptime!=]"2014/02/26 10:27:57", "2014-06-10T10:10:10-05:00"[', '{"bool":{"must_not":{"bool":{"filter":[{"range":{"lastPacket":{"lte":"2014-02-26T10:27:57-05:00","gte":"2014-02-26T10:27:57-05:00"}}},{"range":{"lastPacket":{"gte":"2014-06-10T11:10:10-04:00","lte":"2014-06-10T11:10:10-04:00"}}}]}}}}');
+
+# Test in array quoted regex is a string but a quoted wildcard is a wildcard
+doTest('http.reqbody == [/barney/,fred,fred*]', '{"bool":{"should":[{"regexp":{"http.requestBody":"barney"}},{"terms":{"http.requestBody":["fred"]}},{"wildcard":{"http.requestBody":"fred*"}}]}}');
+doTest('http.reqbody == ["/barney/","fred","fred*"]', '{"bool":{"should":[{"terms":{"http.requestBody":["/barney/","fred"]}},{"wildcard":{"http.requestBody":"fred*"}}]}}');
+doTest('http.reqbody == ]/barney/,fred,fred*[', '{"bool":{"filter":[{"regexp":{"http.requestBody":"barney"}},{"term":{"http.requestBody":"fred"}},{"wildcard":{"http.requestBody":"fred*"}}]}}');
+doTest('http.reqbody == ]"/barney/","fred","fred*"[', '{"bool":{"filter":[{"term":{"http.requestBody":"/barney/"}},{"term":{"http.requestBody":"fred"}},{"wildcard":{"http.requestBody":"fred*"}}]}}');
 
 # Delete shortcuts
 clearIndex("tests_lookups");

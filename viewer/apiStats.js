@@ -208,13 +208,11 @@ class StatsAPIs {
       const from = +req.query.start || 0;
       const stopLen = from + (+req.query.length || 500);
 
-      const r = {
+      res.send({
         recordsTotal: total.count,
         recordsFiltered: results.results.length,
         data: results.results.slice(from, stopLen)
-      };
-
-      res.send(r);
+      });
     }).catch((err) => {
       console.log(`ERROR - ${req.method} /api/stats`, query, util.inspect(err, false, 50));
       res.send({ recordsTotal: 0, recordsFiltered: 0, data: [] });
@@ -249,7 +247,7 @@ class StatsAPIs {
         bool: {
           filter: [
             {
-              range: { currentTime: { from: req.query.start, to: req.query.stop } }
+              range: { currentTime: { gte: req.query.start, lte: req.query.stop } }
             },
             {
               term: { interval: req.query.interval || 60 }
@@ -372,7 +370,7 @@ class StatsAPIs {
       Db.nodesInfoCache(req.query.cluster),
       Db.masterCache(req.query.cluster),
       Db.allocation(req.query.cluster),
-      Db.getClusterSettings({ flatSettings: true, cluster: req.query.cluster })
+      Db.getClusterSettingsCache({ flat_settings: true, cluster: req.query.cluster })
     ]).then(([nodesStats, nodesInfo, master, { body: allocation }, { body: settings }]) => {
       const shards = new Map(allocation.map(i => [i.node, parseInt(i.shards, 10)]));
 
@@ -949,7 +947,7 @@ class StatsAPIs {
     }
 
     Promise.all([
-      Db.getClusterSettings({ flatSettings: true, include_defaults: true, cluster: req.query.cluster }),
+      Db.getClusterSettings({ flat_settings: true, include_defaults: true, cluster: req.query.cluster }),
       Db.getILMPolicy(req.query.cluster),
       Db.getTemplate('sessions3_template', req.query.cluster)
     ]).then(([{ body: settings }, ilm, { body: template }]) => {
@@ -1121,12 +1119,12 @@ class StatsAPIs {
     }
 
     if (req.body.key.startsWith('arkime.ilm')) {
-      Promise.all([Db.getILMPolicy()]).then(([ilm]) => {
+      Promise.all([Db.getILMPolicy(req.query.cluster)]).then(([ilm]) => {
         const silm = ilm[`${prefix}molochsessions`];
         const hilm = ilm[`${prefix}molochhistory`];
 
         if (silm === undefined || hilm === undefined) {
-          return res.serverError(500, 'ILM isn\'t configured');
+          return res.serverError(500, `ILM isn't configured`);
         }
 
         switch (req.body.key) {
@@ -1149,9 +1147,9 @@ class StatsAPIs {
           return res.serverError(500, 'Unknown field');
         }
         if (req.body.key.startsWith('arkime.ilm.history')) {
-          Db.setILMPolicy(`${prefix}molochhistory`, hilm);
+          Db.setILMPolicy(`${prefix}molochhistory`, hilm, req.query.cluster);
         } else {
-          Db.setILMPolicy(`${prefix}molochsessions`, silm);
+          Db.setILMPolicy(`${prefix}molochsessions`, silm, req.query.cluster);
         }
         return res.send(JSON.stringify({ success: true, text: 'Set' }));
       });
@@ -1209,7 +1207,7 @@ class StatsAPIs {
    */
   static async rerouteES (req, res) {
     try {
-      await Db.reroute();
+      await Db.reroute(req.query.cluster);
       return res.send(JSON.stringify({ success: true, text: 'Reroute successful' }));
     } catch (err) {
       return res.send(JSON.stringify({ success: true, text: 'Reroute failed' }));
@@ -1226,8 +1224,8 @@ class StatsAPIs {
    * @returns {string} text - The success message to (optionally) display to the user.
    */
   static flushES (req, res) {
-    Db.refresh('*');
-    Db.flush('*');
+    Db.refresh('*', req.query.cluster);
+    Db.flush('*', req.query.cluster);
     return res.send(JSON.stringify({ success: true, text: 'Flushed' }));
   };
 
@@ -1259,7 +1257,7 @@ class StatsAPIs {
    */
   static async clearCacheES (req, res) {
     try {
-      const { body: data } = await Db.clearCache();
+      const { body: data } = await Db.clearCache(req.query.cluster);
       return res.send(JSON.stringify({
         success: true,
         text: `Cache cleared: ${data._shards.successful} of ${data._shards.total} shards successful, with ${data._shards.failed} failing`
@@ -1290,11 +1288,12 @@ class StatsAPIs {
    * @returns {array} ipExcludes - List of node ips that disallow the allocation of shards.
    */
   static getESShards (req, res) {
-    const options = ViewerUtils.addCluster(req.query.cluster, { flatSettings: true });
+    const options = ViewerUtils.addCluster(req.query.cluster, { flat_settings: true });
     Promise.all([
       Db.shards(options.cluster ? { cluster: options.cluster } : undefined),
-      Db.getClusterSettings(options)
-    ]).then(([{ body: shards }, { body: settings }]) => {
+      Db.getClusterSettingsCache(options),
+      Db.loadESId2Info(options.cluster)
+    ]).then(([{ body: shards, esid2info}, { body: settings }]) => {
       if (!Array.isArray(shards)) {
         return res.serverError(500, 'No results');
       }
@@ -1321,7 +1320,13 @@ class StatsAPIs {
       const nodes = {};
 
       for (const shard of shards) {
-        if (shard.node === null || shard.node === 'null') { shard.node = 'Unassigned'; }
+        if (shard.node === null || shard.node === 'null') {
+          if (shard.ud && shard.ud.startsWith('node_left [')) {
+            shard.node = Db.getESId2Node(shard.ud.substring(11, shard.ud.length - 1), req.cluster) ?? 'Unassigned';
+          } else {
+            shard.node = 'Unassigned';
+          }
+        }
 
         if (!(req.query.show === 'all' ||
           shard.state === req.query.show || //  Show only matching stage
@@ -1384,7 +1389,7 @@ class StatsAPIs {
     }
 
     try {
-      const { body: settings } = await Db.getClusterSettings({ flatSettings: true, cluster: req.query.cluster });
+      const { body: settings } = await Db.getClusterSettings({ flat_settings: true, cluster: req.query.cluster });
       let exclude = [];
       let settingName;
 
@@ -1433,7 +1438,7 @@ class StatsAPIs {
     }
 
     try {
-      const { body: settings } = await Db.getClusterSettings({ flatSettings: true, cluster: req.query.cluster });
+      const { body: settings } = await Db.getClusterSettings({ flat_settings: true, cluster: req.query.cluster });
       let exclude = [];
       let settingName;
 
@@ -1465,6 +1470,39 @@ class StatsAPIs {
     } catch (err) {
       console.log(`ERROR - ${req.method} /api/esshards/%s/%s/include`, ArkimeUtil.sanitizeStr(req.params.type), ArkimeUtil.sanitizeStr(req.params.value), util.inspect(err, false, 50));
       return res.serverError(500, 'Node inclusion failed');
+    }
+  };
+
+  // --------------------------------------------------------------------------
+  /**
+   * POST - /api/esshards/:index/:shard/delete
+   *
+   * Delete OpenSearch/Elasticsearch (admin only).
+   * @name /esshards/:index/:shard/delete
+   * @returns {boolean} success - Whether include node operation was successful.
+   * @returns {string} text - The success/error message to (optionally) display to the user.
+   */
+  static async deleteESShard (req, res) {
+    if (internals.multiES && req.query.cluster === undefined) {
+      return res.serverError(401, 'Missing cluster in multiES mode');
+    }
+
+    try {
+      const nodesStats = await Db.nodesStatsCache(req.query.cluster);
+      let nodename;
+      for (const [, node] of Object.entries(nodesStats.nodes)) {
+        if (node.roles.includes('data')) {
+          nodename = node.name;
+          break;
+        }
+      }
+      const commands = [{ allocate_empty_primary: { index: req.params.index, shard: req.params.shard, node: nodename, accept_data_loss: true } }];
+
+      await Db.reroute(req.query.cluster, commands);
+      return res.send(JSON.stringify({ success: true }));
+    } catch (err) {
+      console.log(`ERROR - ${req.method} /api/esshards/%s/%s/delete`, ArkimeUtil.sanitizeStr(req.params.index), ArkimeUtil.sanitizeStr(req.params.shard), util.inspect(err, false, 50));
+      return res.serverError(500, `Deleting shard ${ArkimeUtil.sanitizeStr(req.params.index)}:${ArkimeUtil.sanitizeStr(req.params.shard)} failed`);
     }
   };
 
@@ -1559,14 +1597,15 @@ class StatsAPIs {
       _source: [
         'ver', 'nodeName', 'currentTime', 'monitoring', 'deltaBytes',
         'deltaPackets', 'deltaMS', 'deltaESDropped', 'deltaDropped',
-        'deltaOverloadDropped'
+        'deltaOverloadDropped', 'freeSpaceM', 'freeSpaceP'
       ]
     };
 
     Promise.all([
       Db.search('stats', 'stat', query),
-      Db.numberOfDocuments('stats')
-    ]).then(([stats, total]) => {
+      Db.numberOfDocuments('stats'),
+      Db.nodesStatsCache()
+    ]).then(([stats, total, nodesStats]) => {
       if (stats.error) { throw stats.error; }
 
       const results = { total: stats.hits.total, results: [] };
@@ -1593,11 +1632,32 @@ class StatsAPIs {
         results.results.push(fields);
       }
 
-      res.send({
+      // add es nodes to the parliament response
+      const esNodes = [];
+      if (nodesStats?.nodes) {
+        for (const node of Object.values(nodesStats.nodes)) {
+          const freeSize = node.roles?.some(str => str.startsWith('data')) ? node.fs.total.available_in_bytes : 0;
+          const totalSize = node.roles?.some(str => str.startsWith('data')) ? node.fs.total.total_in_bytes : 0;
+          const freeSpaceM = freeSize / 1000000;
+          const freeSpaceP = totalSize > 0 ? (freeSize / totalSize) * 100 : 0;
+
+          esNodes.push({
+            nodeName: node.name,
+            freeSpaceM,
+            freeSpaceP,
+            roles: node.roles || []
+          });
+        }
+      }
+
+      const r = {
         data: results.results,
         recordsTotal: total.count,
-        recordsFiltered: results.total
-      });
+        recordsFiltered: results.total,
+        esNodes
+      };
+
+      res.send(r);
     }).catch((err) => {
       console.log(`ERROR - ${req.method} /api/parliament`, util.inspect(err, false, 50));
       res.send({ recordsTotal: 0, recordsFiltered: 0, data: [] });

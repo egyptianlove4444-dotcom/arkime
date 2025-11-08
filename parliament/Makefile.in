@@ -1,7 +1,6 @@
-install_sh = @install_sh@
-mkdir_p = @mkdir_p@
+MKDIR_P = mkdir -p
 INSTALL = @INSTALL@
-PARLIAMENTDIR = @prefix@/parliament
+PARLIAMENTDIR = $(DESTDIR)@prefix@/parliament
 CP = /bin/cp
 
 
@@ -12,13 +11,14 @@ check:
 	npm run bundle
 
 install:
-	@mkdir -p "$(PARLIAMENTDIR)" "$(PARLIAMENTDIR)/vueapp"
+	$(MKDIR_P) "$(PARLIAMENTDIR)" "$(PARLIAMENTDIR)/vueapp"
 	$(INSTALL) *.js package.json package-lock.json $(PARLIAMENTDIR)
 	npm ci
 	npm run bundle:min
+	$(CP) -pr views $(PARLIAMENTDIR)
 	$(CP) -pr favicon.ico $(PARLIAMENTDIR)
 	$(CP) -pr vueapp/dist "$(PARLIAMENTDIR)/vueapp"
-	(cd $(PARLIAMENTDIR) ; npm ci --production)
+	(cd $(PARLIAMENTDIR) ; npm ci --omit=dev)
 
 distclean realclean clean:
 	rm -rf node_modules

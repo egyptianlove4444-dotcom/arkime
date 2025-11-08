@@ -54,6 +54,12 @@
                }
             ],
             "dnsCnt" : 1,
+            "dot1q" : {
+               "id" : [
+                  100
+               ],
+               "idCnt" : 1
+            },
             "dstOui" : [
                "Cisco Systems, Inc"
             ],
@@ -77,6 +83,11 @@
             ],
             "dstPayload8" : "a62c818300010000",
             "dstRIR" : "ARIN",
+            "dstTTL" : [
+               50
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 34525,
             "fileId" : [],
             "firstPacket" : 1417577703821,
             "ipProtocol" : 17,
@@ -147,6 +158,10 @@
             ],
             "srcPayload8" : "a62c010000010000",
             "srcRIR" : "ARIN",
+            "srcTTL" : [
+               60
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 217
          },
          "header" : {

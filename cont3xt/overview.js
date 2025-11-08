@@ -87,7 +87,7 @@ class Overview {
     }
     custom = (
       ({ // only allow these properties in custom fields
-        // eslint-disable-next-line no-shadow
+
         label, field, type, path, fields, defang, pivot, join, fieldRoot, fieldRootPath, filterEmpty, defaultSortField, defaultSortDirection, altText, noSearch, postProcess
       }) => ({
         label, field, type, path, fields, defang, pivot, join, fieldRoot, fieldRootPath, filterEmpty, defaultSortField, defaultSortDirection, altText, noSearch, postProcess
@@ -570,16 +570,34 @@ const defaultOverviewPropertiesForIType = {
     title: 'Phone Overview for %{query}',
     fields: [
       {
-        type: 'linked',
-        from: 'Twilio',
-        field: 'caller_name',
-        alias: 'Caller Name'
+        field: 'line_type_intelligence.carrier_name',
+        alias: 'Carrier',
+        type: 'linked'
       },
       {
-        type: 'linked',
-        from: 'Twilio',
-        field: 'carrier',
-        alias: 'Carrier'
+        field: 'line_type_intelligence.type',
+        alias: 'Line Type',
+        type: 'linked'
+      },
+      {
+        field: 'caller_name_object.caller_name',
+        alias: 'Caller Name',
+        type: 'linked'
+      },
+      {
+        field: 'caller_name_object.caller_type',
+        alias: 'Caller Type',
+        type: 'linked'
+      },
+      {
+        alias: 'Country Code',
+        field: 'country_code',
+        type: 'linked'
+      },
+      {
+        alias: 'Phone Number',
+        field: 'phone_number',
+        type: 'linked'
       }
     ]
   },

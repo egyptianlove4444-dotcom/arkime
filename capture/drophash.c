@@ -116,7 +116,7 @@ int arkime_drophash_add (ArkimeDropHashGroup_t *group, int port, const void *key
 }
 
 /******************************************************************************/
-int arkime_drophash_should_drop (ArkimeDropHashGroup_t *group, int port, void *key, uint32_t current)
+int arkime_drophash_should_drop (ArkimeDropHashGroup_t *group, int port, const void *key, uint32_t current)
 {
     const ArkimeDropHash_t *hash = group->drops[port];
 
@@ -151,12 +151,12 @@ int arkime_drophash_should_drop (ArkimeDropHashGroup_t *group, int port, void *k
     return 0;
 }
 /******************************************************************************/
-void arkime_drophash_free(void *ptr)
+LOCAL void arkime_drophash_free(void *ptr)
 {
     ARKIME_TYPE_FREE(ArkimeDropHashItem_t, ptr);
 }
 /******************************************************************************/
-void arkime_drophash_delete (ArkimeDropHashGroup_t *group, int port, void *key)
+void arkime_drophash_delete (ArkimeDropHashGroup_t *group, int port, const void *key)
 {
     ArkimeDropHash_t *hash = group->drops[port];
 

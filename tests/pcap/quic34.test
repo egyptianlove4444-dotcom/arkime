@@ -26,11 +26,18 @@
                "packets" : 0,
                "port" : 443
             },
+            "dot1q" : {
+               "id" : [
+                  300
+               ],
+               "idCnt" : 1
+            },
             "dstOui" : [
                "ICANN, IANA Department"
             ],
             "dstOuiCnt" : 1,
             "dstRIR" : "ARIN",
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1467241187446,
             "ipProtocol" : 17,
@@ -92,6 +99,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "0d9300a653775210",
+            "srcTTL" : [
+               127
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 1350
          },
          "header" : {

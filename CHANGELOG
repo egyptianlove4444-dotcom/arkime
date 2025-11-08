@@ -1,9 +1,11 @@
-NOTICE: Please see https://arkime.com/faq#upgrading-moloch for upgrading info
+NOTICE: Please see https://arkime.com/faq#upgrading-arkime for upgrading info
 
 OpenSearch Versions:
+  * Arkime >= 5.7.0  supports 1.x, 2.x or 3.x
   * Arkime >= 3.0.0  supports 1.x or 2.x
 
 Elasticsearch Versions:
+  * Arkime >= 5.7.0  supports ES >= 7.10.0, 8.x, or 9.x
   * Arkime >= 4.0.0  supports ES >= 7.10.0 or 8.x, not 9.x or later
   * Arkime >= 3.0.0  supports ES >= 7.10.0, not 8.x or later
   * Moloch >= 2.7.0  supports ES >= 7.4.0, not 8.x or later
@@ -15,6 +17,8 @@ Elasticsearch Versions:
   * Moloch >= 0.18.1 supports ES 2.4.x, >= 5.3.1 not 6.x or later
 
 Node Versions:
+  * Arkime >= 6.0.0 requires NodeJS >= 22.15.0 or < 23
+  * Arkime >= 5.4.0 requires NodeJS >= 20.0.0 or < 21
   * Arkime >= 5.0.2 requires NodeJS >= 18.15.0 or < 21
   * Arkime >= 5.0.0 requires NodeJS >= 18.0.0 and < 19
   * Arkime >= 4.2.0 requires NodeJS >= 16.0.0 and < 19
@@ -31,7 +35,410 @@ NOTICE: Restart wiseService before capture when upgrading
 NOTICE: Cross-cluster Shortcuts require you to not restart all your viewers at once after upgrading
 NOTICE: Create a parliament config file before upgrading (see https://arkime.com/settings#parliament and https://arkime.com/faq#how_do_i_upgrade_to_arkime_5)
 
-5.1.1 2024/04/xx
+6.0.0 2025/11/xx
+## BREAKING
+  - #3138 settings parseSMTP & parseSMB removed, use disableParsers instead
+  - #3138 plugins must end with supported extension, e.g. .so, .lua
+  - #3138 setting luaFiles now defaults to no files
+  - #3212 with capture --scheme is now the default, use --libpcap for previous behaviour
+  - #3281 Remove Ubuntu 20.04 builds
+  - #3293 db.pl requires leading http/https for OpenSearch/Elasticsearch URLs
+  - #3306 WISE now requires webBasePath be set if using one, please set in Arkime 5 before upgrading
+  - #3422 Cont3xt ThreatFox integration requires api key (free on site https://auth.abuse.ch/)
+  - #3427 Capture now adds first vlan back to packet, this will change previous bpf filters, tpacketv3OldVlan=true to disable
+## Release
+  - Node 22.19.0
+  - #3342 Container based on Debian 13 now
+## All
+  - Migrated to Vue3!! (misc PRs)
+  - Remove Webpack tech debt (misc PRs)
+  - #3286 support oidc end_session endpoint and token if logoutUrl not set,
+          new logoutUrlMethod setting
+  - #3306 eslint upgraded to v9
+  - #3364 eslint vue files and enforce recommended rules
+## Capture
+  - #3138 lua plugin now autoloads *.lua scripts in parsers directory
+          if lua plugin is used
+  - #3208 vlan id is now stored in order seen
+  - #3268 New python support, *.py scripts in parsers directory auto loaded
+          use disablePython=true to disable
+  - #3357 Basic SCTP support
+  - #3375 For WISE/Rules fields that are lower/upper case, capture updates string
+  - #3427 Add first vlan back to packet in AFPacket mode
+## Capture/Viewer
+  - #3197 new sessionsStarted and sessionsPresent in files tab
+  - #3210 new vlan.dot1q and vlan.dot1ad expressions
+  - #3308 City and Region from MMDB
+## Viewer
+  - #3326 BIG search expression
+  - #3343 Basic internationalization support
+          (most translations contributed by Cursor using Claude 4 Sonnet)
+  - #3341 Check files index mapping on start
+  - #3366 Sankey diagram on SPI Graph page
+  - #3374 Allow multiviewer to change password if usersElasticsearch is set
+  - #3376 multiviewer logs history for only clusters selected
+  - #3399 Now track ES node ids in dstats so on Shards tab we can show
+          which node is missing for node_left. ES should do this for us!
+  - ##3423 Periodic Queries and Hunts can now notify on multiple notifiers
+## Parliament
+  - #3395 Low disk space monitoring for capture and ES hosts
+  - #3395 Navbar ES status indicator cycles through clusters with issues w/highlighting
+  - #3395 Clickable issue table rows navigate to node stats
+  - #3395 Issue filters persist in URL parameters
+  - #3395 Toggle to show/hide all issues
+  - #3395 Display ES version in cluster tooltips
+## Cont3xt
+  - #3405 Keyword/regex highlighting in integration and overview cards via ?highlight= parameter
+          or via Search bar mode selector to switch between query search and highlight pattern modes
+  - #3422 ThreatFox integration
+  - #3421 Zetalytics integration
+  - #3406 Domain Tools Whois Integration
+  - #3410 crt.sh integration
+  - #3407 Greynoise malicious tidbit
+
+5.8.2 2025/11/xx
+## Release
+  - #3425 docker.sh add --add-admin option
+## Capture
+  - #3414 Support tls client hello packets that are split
+## Capture/Viewer
+  - #3408 ja4d6 support
+## Viewer
+  - #3412 Files tab can paginate over 10k entries now
+
+5.8.1 2025/10/20
+## Release
+  - #3367 fix Configure not setting elasticsearchBasicAuth correctly
+  - New version of ja4d
+## Capture
+  - #3363 Fix lua session.dstIp
+  - #3368 Fix rules reload crash
+  - #3401 Fix dead lock if using s3 writer and s3 scheme reader
+## Viewer
+  - #3385 Fix missing pcap file header crash
+  - #3398 Fix leaving 10 oldest files since 5.4.0
+  - #3398 Log expire delete errors
+
+5.8.0 2025/09/22
+## Release
+  - #3287 Node 20.19.4
+## All
+  - #3352 Abort and useful error for bad userAuthIps setting
+## Capture/Viewer
+  - #3307 Added garland timestamp plugin
+## Capture
+  - #3294 Improved dhcpv6 parser and ja4d display
+  - #3297, #3321 Fix lua memory leaks
+  - #3298 Fix dns encoding issues with answers
+  - #3299 Handle more than 255 ciphers with ja4
+  - #3305, #3337 added basic ip AH protocol support
+  - #3314 fix SQS/S3 with MinIO (thanks @mcgillowen)
+## db.pl
+  - #3320 Fixed some Elasticsearch/Opensearch calls that still had types
+  - #3323, #3328 New db.pl repair implementation that can fix multiple issues
+## Viewer
+  - #3319 Fix export csv from SPI Graph
+  - #3344 Fix parsing quoted arrays in wildcards
+  - #3358 Fixed files created with s3 capture scheme not showing in viewer
+          if not in top level directory
+## WISE
+  - #3339 Elasticsearch source can have paths value shortcuts
+  - #3359 Elasticsearch source can have integer and object values
+
+5.7.1 2025/07/23
+## All
+  - #3259 Config stored in Elasticsearch/OpenSearch now respects --insecure
+  - #3279, #3274, #3273 NPM dependabot fixes
+## Capture/Viewer
+  - #3258 Add new ethertype field
+## Capture
+  - #3258 unkEthernet plugin now groups sessions by ethertype + macs
+  - #3276 fix wise lookups for some hashed string fields
+## Cont3xt
+  - #3253 IPQualityScore support (thanks @RamboV)
+
+5.7.0 2025/06/11
+## BREAKING
+  - User defined roles with the user-role-mappings feature used to require
+     role- prefix but didn't work, now they require role: prefix and do work
+## Release
+  - #3196 Fix Debian 13 dependency libyara issue
+  - #3205 arkime_config_interfaces.sh -n with dash fix
+  - #3211 Node 20.19.2
+  - #3231 No longer use screwdriver, only github actions, goodbye el7
+  - #3233 EL10 initial support
+  - #3244 Support make DESTDIR install
+## All
+  - #3237 Add missing settings to addUser.js/arkime_add_user.sh
+## Viewer
+  - #3199,#3200 Support searchable snapshots with partial- index prefix
+  - #3218 Elasticsearch 9 dstats fix
+  - #3224 Fix/Change user-role-mappings must start with role: instead of role-
+## Capture
+  - #3209 New espSavePackets setting
+  - #3229 Drop packets larger than 0xffff in size
+
+5.6.4 2025/04/29
+## Viewer
+  - #3188 Prevent more session prototype pollution with connections
+  - #3188 Improved receiveSession auth & index verification
+
+5.6.3 2025/04/22
+## Release
+  - #3173 Initial Debian 13 support
+## Capture
+  - #3175 Don't include dns.host.tokens in host query
+  - #3177 support autoGenerateId=consistent to reprocess into same sid
+## Multies
+  - #3176 Fix issues when clusters are down (thanks @DavidCHIA-Rub)
+## Viewer
+  - #3164 Support searchable snapshots with partial- index prefix
+  - #3167, #3169 Prevent more session prototype pollution
+  - #3170 Add error handling for unknown views
+
+5.6.2 2025/03/27
+## db.pl
+  - #3135 Support passwords > 55 characters (thanks @GhostNaix)
+  - #3143 new db.pl mv <node> <old prefix> <new prefix> to move many files at once
+## Capture
+  - #3105 Support decrypted smtp
+  - #3136 Support ERSPAN Type III
+  - #3157 Log bulk FORBIDDEN errors
+## Viewer
+  - #3137 Prevent session prototype pollution
+  - #3142 Fix session detail long arrays not displaying correctly
+  - #3147 Fix erspan decode issues
+  - #3148 Fix issuerCN not displaying in session detail
+  - #3151 Fix cert.serial not displaying in session detail
+  - #3158 Fix s3http/s scheme not caching blocks correctly
+  - #3159 Fix packets not showing up when using writer-s3 without compression
+
+5.6.1 2025/02/13
+## BREAKING
+  - Cont3xt Twilio integration requires a new token
+## Release
+  - #3103 arkime_config_interfaces.sh supports interface envs
+  - #3121 Node 20.18.3
+  - #3115 build ja4 docker images
+  - #3127 docker.sh now sets ARKIME__usersElasticsearch (when not set) from
+          ARKIME__elasticsearch (when set)
+## All
+  - #3093 if config file doesn't exist, don't exit with error.  This is useful
+          with containers + envs. Capture does require the file to
+	  exist if specified.
+  - #3107 ARKIME__ envs now use cont3xt,wiseService,... instead of default for
+          section name for those respective applications
+  - #3110 can now use https://usersElasticsearch in url/config and Arkime will
+          fill in from the env/config
+  - #3122 if no section used for override, use something sane
+## Capture
+  - #3100 fix SSLv2 constants and misidentify DTLS 0 (thanks @droe)
+  - #3105 parse smtp data that isn't actually encrypted after STARTTLS
+## db.pl
+  - #3101 support ARKIME__prefix, ARKIME__elasticsearchBasicAuth,
+          ARKIME__elasticsearchAPIKey envs
+  - #3124 new arkime_configs index for storing config files
+## Viewer
+  - #3095 Show Arkime capture version in the stats UI
+  - #3114 Fix http sessions missing http request not showing body (thanks @bryangwj)
+  - #3120 Fix value actions not showing for info column fields
+## WISE
+  - #3107, #3108 Support webBasePath
+  - #3110, #3111, #3127 if usersElasticsearch isn't set will use elasticsearch config
+## Cont3xt
+  - #3118 update Twilio integration to v2 API
+
+5.6.0 2025/01/15
+## BREAKING
+  - Unknown config variables that start with tpacketv3 or simple will now cause an error
+## Release
+  - #3051 arkime_config_interfaces.sh doesn't try and set up "dummy" interface
+  - #3081 afterinstall.sh uses prefix correctly
+## All
+  - #3037 remove babel
+  - #3087 Env vars improvements and DASH, COLON, DOT, SLASH are now replaced
+## Capture
+  - #3046 added packet-stats command
+  - #3052 add ARKIME_default__ support for env vars
+  - #3062 only refresh Arkime indices on exit
+  - #3063 use suricata vlan when using sessionIdTracking
+  - #3070 new --command option instead of having to use command-socket
+  - #3072 add ident protocol classifier
+  - #3079 check tpacketv3* and simple* config settings
+  - #3083 new _flipSrcDst rule action
+  - #3083 new tcp.synSet rule field
+  - #3083 rules can now use values of "${configvar}"
+  - #3088 fix memory leak if "<root>" is dns query
+## Viewer
+  - #3055 fix missing session.network section error
+  - #3059 fix losing custom theme setting
+  - #3068 display all kinds of data nodes on ES Nodes tab
+  - #3076 Fix incorrect Overload Drops/s statistic in Capture Stats page (thanks @mcgillowen)
+
+5.5.1 2024/11/20
+## Release
+  - #3011 Add db.pl to docker.sh
+  - #3015 Node 20.18.0
+  - #3021 docker.sh now supports --init and installs missing iproute2 package
+## All
+  - #3010 fix lmdb cont3xt and users DB
+## Cont3xt
+  - #3012 add basic databricks support
+  - #3016 fixed cont3xt health check request every second - should be 10s
+## db.pl
+  - #3017 New field-list, field-rm commands
+## Viewer
+  - #3008 fixed sessions column sorting not working in some cases
+## WISE
+  - #3012 add basic databricks support
+
+5.5.0 2024/11/11
+## Release
+  - #2925 Node 20.17.0
+  - #2956 CyberChef 10.19.2
+  - #2992 Now have official docker container at https://github.com/arkime/arkime/packages
+## All
+  - #2947 new user-role-mappings section for oidc/header auth
+  - #2950 support authRedirectURIs list (thanks @divinehawk)
+  - #2954 Fix form/oidc authMode failure to start when deleting old sids failed
+  - #2964 Add to files tab lastPacket timestamp and start/finish processing time stamps
+  - #2995 Switch to arkime-iptrie
+## Capture
+  - #2924 _closeNow rule operator
+  - #2929 Update ja4 for alpn edge cases
+  - #2940 cert.ja4x* now work with rules/wise
+  - #2959 New --libpcap option for libpcap offline processing vs
+          --scheme for new faster method
+  - #2969 Add back host.dns to rules
+  - #2991 Add initial IP TTL and TCP Seq number fields
+  - #2996 pcapDir defaults to /opt/arkime/raw and pluginDir defaults to /opt/arkime/plugins
+## db.pl
+  - #2946 fix sync-files not handling multiple nodes, or dash containing nodes
+          correctly (thanks @dennisse)
+## Multies
+  - #2962 fix caTrustFile not working with multies
+## Viewer
+  - #2926 cronQueries=auto now uses the node name in the unique key
+  - #2935 spigraph treemap shows unique Dst/Src IPs
+  - #2945 add iframe 'allow' option
+  - #2965 fix millisecond timestamp setting not saving
+  - #2966 Add the ability to hide tags in the session table
+
+5.4.0 2024/08/05
+## Release
+  - #2885 Node 20.15.1
+## All
+  - #2892 backoff recurring health requests if they fail
+  - #2898 support using env vars for many config settings (thanks @Jc2k)
+## Capture
+  - #2866 for s3/sqs scheme support standard AWS credentials methods including
+          env vars, --profile ~/.aws/credentials or config, and meta data service
+  - #2869 scheme mode for local files support monitor mode
+  - #2870 log error with pcap_dispatch (thanks @vpiserchia)
+  - #2873 New --command-socket option to enable a unix domain control port for
+          controlling capture
+  - #2875 New --command-wait option to use when no offline files on command line
+  - #2877 command-socket add-dir now has options to override command line
+  - #2891 fix JA4 when num extensions or ciphers is > 99
+  - #2893 support deleting pcaps when ignoreErrors set (thanks @vpiserchia)
+  - #2894 support --op/--delete with scheme commands
+## Cont3xt
+  - #2879 Added skipChildren query string parameter
+  - #2880 Only focus on search if no search parameter
+  - #2890 Date formatting in link groups
+  - #2903 Added Quad9 tidbits on domains and ips
+  - #2904 Added Email Reputation integration
+## Multies
+  - #2865 form or oidc require usersElasticsearch to be set for multiES
+## Viewer
+  - #2884 Improve hunt parallelization, run 2 sessions per node at once
+  - #2886 Expire logging improvements and multiES disable
+  - #2896 added protocols/tags to default info column fields
+  - #2899 fixed viewer not loading writer-s3 files since Arkime 5.3.0
+  - #2900 Support hunts on multiviewer, still need a normal viewer to run
+          hunts
+
+5.3.0 2024/06/27
+## Release
+  - #2821 CyberChef 10.19.0
+## All
+  - #2842 requiredAuthHeaderVal can be a comma separated list
+## Capture
+  - #2820 fix puny dns entries missing from all list sometimes
+  - #2832 arkime_config_interfaces.sh fixes (thanks @dennisse)
+  - #2833 support processing a directory from s3
+  - #2835 fix crash with bgp parsing and shifting time
+  - #2835 create pcap files with at least config snapLen
+  - #2835 fix files with no processed packets hanging capture
+  - #2856 suppport AWS SQS for notifications to process new S3 files
+  - #2856 fix scheme pcap processor with corrupt pcap files
+  - #2859 log error if maxStreams is too low
+## Cont3xt
+  - #2823 added "Add Field" button to top of overview form
+  - #2829 new DNS integration card
+## Multies
+  - #2853 don't initialize Auth subsystem
+## Parliament
+  - #2849 fix form auth not styling correctly
+  - #2857 display cont3xt/wise links for non admins
+## Viewer
+  - #2817 new maxSessionsQueried setting, default 2MM
+  - #2819 hide noFacet fields from being columns
+  - #2824 add ability to delete shards from ES Shards tab
+  - #2834 improve forcedExpression help
+  - #2840 fix downloading pcap of scheme uploaded items
+  - #2843 new %NODEHOST% substitution
+  - #2845 fix s3 download to work with LocalStack
+## WISE
+  - #2834 fix azure ip link
+
+5.2.0 2024/05/28
+## BREAKING
+  - db.pl upgrade is required when upgrading from 5.1.2 or earlier
+## Release
+  - #2779 Using https://localhost or https://127.0.0.1 no longer requires --insecure
+  - #2779 Configure now prompts for OpenSearch/Elasticsearch user/password
+  - #2783 New debian 12 package
+  - CyberChef 10.18.3
+  - #2797 Node 18.20.3
+## All
+  - #2772 fix OIDC login crash
+  - #2773 Users tab saves automatically on change
+## Capture
+  - #2748 icmp community id support
+  - #2766 VLAN or VNI can be used in session ids, controlled by sessionIdTracking
+  - #2784 Added DTLS JA4 support
+  - #2791 udp databytes was too large when padded
+  - #2796 Added DTLS JA4S support, requires new ja4plus plugin also
+  - #2799 support multiple EOL for JA4T and JA4TS
+## Cont3xt
+  - #2795 support adding clickhouse integrations
+## db.pl
+  - #2798 fix expire/rotate warnings
+## Viewer
+  - #2741 save session table info column fields
+  - #2800 scrubbing pcap of compressed/encrypted packets deletes references
+          instead of failing
+
+
+5.1.2 2024/04/23
+## Release
+  - #2759 CyberChef 10.17.0
+## Capture
+  - #2756 parse SMB dialect
+  - #2758 fix rules not always matching "0" for non array integer fields
+## Viewer
+  - #2765 add esadmin functionality to multiviewer
+
+5.1.1 2024/04/15
+## Release
+  - #2752 Node 18.20.2 (EL 7, Ubuntu 18 still on 18.19.1)
+## Capture
+  - #2732 rules support NOT string and integer fields
+  - #2746 fix DNS parser PUNY length checks
+  - #2744 fix empty pcap files hanging capture
+## Viewer
+  - #2745 don't autocomplete values starting with a quote
 
 5.1.0 2024/04/04
 ## Release

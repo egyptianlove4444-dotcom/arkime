@@ -12,13 +12,13 @@ extern ArkimeConfig_t        config;
 
 LOCAL  ArkimeStringHashStd_t readersHash;
 
-void reader_libpcapfile_init(char *);
-void reader_libpcap_init(char *);
-void reader_tpacketv3_init(char *);
-void reader_null_init(char *);
-void reader_pcapoverip_init(char *);
-void reader_tzsp_init(char *);
-void arkime_reader_scheme_init(char *);
+void reader_libpcapfile_init(const char *);
+void reader_libpcap_init(const char *);
+void reader_tpacketv3_init(const char *);
+void reader_null_init(const char *);
+void reader_pcapoverip_init(const char *);
+void reader_tzsp_init(const char *);
+void arkime_reader_scheme_init(const char *);
 
 ArkimeReaderStart  arkime_reader_start;
 ArkimeReaderStats  arkime_reader_stats;
@@ -79,33 +79,17 @@ void arkime_readers_start()
     char **interfaceOps;
     interfaceOps = arkime_config_raw_str_list(NULL, "interfaceOps", "");
 
-    int i, j;
+    int i;
     for (i = 0; interfaceOps[i]; i++) {
         if (!interfaceOps[i][0])
             continue;
 
         char **opsstr = g_strsplit(interfaceOps[i], ",", 0);
-        for (j = 0; opsstr[j]; j++) { }
+        const char *error = arkime_field_ops_parse(&readerFieldOps[i], ARKIME_FIELD_OPS_FLAGS_COPY, opsstr);
 
-        arkime_field_ops_init(&readerFieldOps[i], j, ARKIME_FIELD_OPS_FLAGS_COPY);
-
-        for (j = 0; opsstr[j]; j++) {
-            char *equal = strchr(opsstr[j], '=');
-            if (!equal) {
-                CONFIGEXIT("Must be FieldExpr=value, missing equal '%s'", opsstr[j]);
-            }
-            int len = strlen(equal + 1);
-            if (!len) {
-                CONFIGEXIT("Must be FieldExpr=value, empty value for '%s'", opsstr[j]);
-            }
-            *equal = 0;
-            int fieldPos = arkime_field_by_exp(opsstr[j]);
-            if (fieldPos == -1) {
-                CONFIGEXIT("Must be FieldExpr=value, Unknown field expression '%s'", opsstr[j]);
-            }
-            arkime_field_ops_add(&readerFieldOps[i], fieldPos, equal + 1, len);
+        if (error) {
+            CONFIGEXIT("%s", error);
         }
-        g_strfreev(opsstr);
     }
     g_strfreev(interfaceOps);
 

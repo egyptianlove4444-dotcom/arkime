@@ -138,9 +138,14 @@
             "dstOuiCnt" : 2,
             "dstPayload8" : "005a01bb83fd3d50",
             "dstRIR" : "TEST",
+            "dstTTL" : [
+               52
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1415053640836,
-            "initRTT" : 159,
+            "initRTT" : 160,
             "ipProtocol" : 6,
             "lastPacket" : 1415053642702,
             "length" : 1867,
@@ -226,6 +231,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "040101bb00000001",
+            "srcTTL" : [
+               126
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "acked-unseen-segment-dst",
                "cert:certificate-authority",
@@ -244,6 +253,10 @@
                "syn" : 1,
                "syn-ack" : 1,
                "urg" : 0
+            },
+            "tcpseq" : {
+               "dst" : 0,
+               "src" : 2142064998
             },
             "test" : {
                "ASN" : [

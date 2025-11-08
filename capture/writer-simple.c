@@ -48,9 +48,12 @@ typedef struct {
     uint64_t             pos;
     uint64_t             blockStart;
     uint64_t             packetBytesWritten;
+    struct timeval       lastPacketTime;
     uint32_t             packets;
     uint32_t             posInBlock;
     uint32_t             id;
+    uint32_t             sessionsStarted;
+    uint32_t             sessionsPresent;
     int                  fd;
     uint8_t              dek[256];
     z_stream             z_strm;
@@ -196,7 +199,6 @@ LOCAL void writer_simple_free(ArkimeSimple_t *info)
 LOCAL ArkimeSimple_t *writer_simple_process_buf(int thread, int closing)
 {
     ArkimeSimple_t *info = currentInfo[thread];
-    static uint32_t lastError;
 
     info->closing = closing;
     if (!closing) {
@@ -266,9 +268,8 @@ LOCAL ArkimeSimple_t *writer_simple_process_buf(int thread, int closing)
     ARKIME_LOCK(simpleQ);
     gettimeofday(&lastSave[thread], NULL);
     DLL_PUSH_TAIL(simple_, &simpleQ, info);
-    if (DLL_COUNT(simple_, &simpleQ) > 100 && lastSave[thread].tv_sec > lastError + 60) {
-        lastError = lastSave[thread].tv_sec;
-        LOG("WARNING - Disk Q of %d is too large, check the Arkime FAQ about (https://arkime.com/faq#why-am-i-dropping-packets) testing disk speed", DLL_COUNT(simple_, &simpleQ));
+    if (DLL_COUNT(simple_, &simpleQ) > 100) {
+        LOG_RATE(60, "WARNING - Disk Q of %d is too large, check the Arkime FAQ about (https://arkime.com/faq#why-am-i-dropping-packets) testing disk speed", DLL_COUNT(simple_, &simpleQ));
     }
     ARKIME_COND_SIGNAL(simpleQ);
     ARKIME_UNLOCK(simpleQ);
@@ -331,6 +332,7 @@ LOCAL char *writer_simple_get_kekId ()
     char okek[2000];
     int i, j;
 
+    okek[0] = 0;
     for (i = j = 0; kek[i] && j + 2 < 1999; i++) {
         if (kek[i] != '%') {
             okek[j] = kek[i];
@@ -456,14 +458,9 @@ LOCAL void writer_simple_zstd_make_new_block(int thread)
 LOCAL void writer_simple_write(const ArkimeSession_t *const session, ArkimePacket_t *const packet)
 {
     if (DLL_COUNT(simple_, &simpleQ) > simpleMaxQ) {
-        static uint32_t lastError;
         static uint32_t notSaved;
-        packet->writerFilePos = 0;
         notSaved++;
-        if (packet->ts.tv_sec > lastError + 60) {
-            lastError = packet->ts.tv_sec;
-            LOG("WARNING - Disk Q of %d is too large and exceed simpleMaxQ setting so not saving %u packets. Check the Arkime FAQ about (https://arkime.com/faq#why-am-i-dropping-packets) testing disk speed", DLL_COUNT(simple_, &simpleQ), notSaved);
-        }
+        LOG_RATE(60, "WARNING - Disk Q of %d is too large and exceed simpleMaxQ setting so not saving %u packets. Check the Arkime FAQ about (https://arkime.com/faq#why-am-i-dropping-packets) testing disk speed", DLL_COUNT(simple_, &simpleQ), notSaved);
         return;
     }
 
@@ -528,7 +525,7 @@ LOCAL void writer_simple_write(const ArkimeSession_t *const session, ArkimePacke
                 name = ".pcap.zst";
             else
                 name = ".pcap";
-            name = arkime_db_create_file_full(packet->ts.tv_sec, name, 0, 0, &info->file->id,
+            name = arkime_db_create_file_full(&packet->ts, name, 0, 0, &info->file->id,
                                               "packetPosEncoding", packetPosEncoding,
                                               "#uncompressedBits", uncompressedBitsArg,
                                               "compression", compressionArg,
@@ -540,7 +537,7 @@ LOCAL void writer_simple_write(const ArkimeSession_t *const session, ArkimePacke
             kekId = writer_simple_get_kekId();
             RAND_bytes(info->file->dek, 256);
             writer_simple_encrypt_key(kekId, info->file->dek, 256, dekhex);
-            name = arkime_db_create_file_full(packet->ts.tv_sec, name, 0, 0, &info->file->id,
+            name = arkime_db_create_file_full(&packet->ts, name, 0, 0, &info->file->id,
                                               "encoding", "xor-2048",
                                               "dek", dekhex,
                                               "kekId", kekId,
@@ -564,7 +561,7 @@ LOCAL void writer_simple_write(const ArkimeSession_t *const session, ArkimePacke
             writer_simple_encrypt_key(kekId, dek, 32, dekhex);
             arkime_sprint_hex_string(ivhex, iv, 12);
             EVP_EncryptInit(info->file->cipher_ctx, cipher, dek, iv);
-            name = arkime_db_create_file_full(packet->ts.tv_sec, name, 0, 0, &info->file->id,
+            name = arkime_db_create_file_full(&packet->ts, name, 0, 0, &info->file->id,
                                               "encoding", "aes-256-ctr",
                                               "iv", ivhex,
                                               "dek", dekhex,
@@ -617,6 +614,12 @@ LOCAL void writer_simple_write(const ArkimeSession_t *const session, ArkimePacke
     }
 
     packet->writerFileNum = currentInfo[thread]->file->id;
+    if (session->lastFileNum == 0) {
+        currentInfo[thread]->file->sessionsStarted++;
+        currentInfo[thread]->file->sessionsPresent++;
+    } else if (session->lastFileNum != packet->writerFileNum) {
+        currentInfo[thread]->file->sessionsPresent++;
+    }
 
     if (compressionMode == ARKIME_COMPRESSION_GZIP) {
         if (currentInfo[thread]->file->posInBlock >= simpleCompressionBlockSize) {
@@ -634,6 +637,7 @@ LOCAL void writer_simple_write(const ArkimeSession_t *const session, ArkimePacke
         packet->writerFilePos = currentInfo[thread]->file->pos;
     }
 
+    currentInfo[thread]->file->lastPacketTime = packet->ts;
     currentInfo[thread]->file->packets++;
     if (simpleShortHeader) {
         char header[6];
@@ -725,7 +729,7 @@ LOCAL void *writer_simple_thread(void *UNUSED(arg))
             if (ftruncate(info->file->fd, info->file->pos) < 0 && config.debug)
                 LOG("Truncate failed");
             close(info->file->fd);
-            arkime_db_update_filesize(info->file->id, info->file->pos, info->file->packetBytesWritten, info->file->packets);
+            arkime_db_update_file(info->file->id, info->file->pos, info->file->packetBytesWritten, info->file->packets, &info->file->lastPacketTime, info->file->sessionsStarted, info->file->sessionsPresent);
         }
 
         writer_simple_free(info);
@@ -759,29 +763,31 @@ LOCAL void writer_simple_exit()
 }
 /******************************************************************************/
 // Called inside each packet thread
-LOCAL void writer_simple_check(ArkimeSession_t *session, void *UNUSED(uw1), void *UNUSED(uw2))
+LOCAL void writer_simple_check(ArkimeSession_t *UNUSED(session), gpointer uw1, gpointer UNUSED(uw2))
 {
     struct timeval now;
     gettimeofday(&now, NULL);
 
+    const int thread = GPOINTER_TO_INT(uw1);
+
     // No data or not enough bytes, reset the time
-    if (!currentInfo[session->thread] || currentInfo[session->thread]->bufpos < (uint32_t)pageSize) {
-        lastSave[session->thread] = now;
+    if (!currentInfo[thread] || currentInfo[thread]->bufpos < (uint32_t)pageSize) {
+        lastSave[thread] = now;
         return;
     }
 
-    if (config.maxFileTimeM > 0 && now.tv_sec - fileAge[session->thread].tv_sec >= config.maxFileTimeM * 60) {
-        writer_simple_process_buf(session->thread, 1);
+    if (config.maxFileTimeM > 0 && now.tv_sec - fileAge[thread].tv_sec >= config.maxFileTimeM * 60) {
+        writer_simple_process_buf(thread, 1);
         return;
     }
 
     // Last add must be 10 seconds ago and have more then pageSize bytes
-    if (now.tv_sec - lastSave[session->thread].tv_sec < 10)
+    if (now.tv_sec - lastSave[thread].tv_sec < 10)
         return;
 
     // Don't force writes for gzip for now
     if (compressionMode != ARKIME_COMPRESSION_GZIP) {
-        writer_simple_process_buf(session->thread, 0);
+        writer_simple_process_buf(thread, 0);
     }
 }
 /******************************************************************************/
@@ -798,7 +804,7 @@ LOCAL gboolean writer_simple_check_gfunc (gpointer UNUSED(user_data))
     int thread;
     for (thread = 0; thread < config.packetThreads; thread++) {
         if (now.tv_sec - lastSave[thread].tv_sec >= 10) {
-            arkime_session_add_cmd_thread(thread, NULL, NULL, writer_simple_check);
+            arkime_session_add_cmd_thread(thread, GINT_TO_POINTER(thread), NULL, writer_simple_check);
         }
     }
     ARKIME_UNLOCK(simpleQ);
@@ -806,7 +812,7 @@ LOCAL gboolean writer_simple_check_gfunc (gpointer UNUSED(user_data))
     return G_SOURCE_CONTINUE;
 }
 /******************************************************************************/
-FILE *writer_simple_get_index(int thread, int64_t fileNum)
+LOCAL FILE *writer_simple_get_index(int thread, int64_t fileNum)
 {
     const int p = fileNum % INDEX_FILES_CACHE_SIZE;
 
@@ -834,12 +840,14 @@ FILE *writer_simple_get_index(int thread, int64_t fileNum)
     return indexFiles[thread][p].fp;
 }
 /******************************************************************************/
-void writer_simple_index (ArkimeSession_t *session)
+LOCAL void writer_simple_index (ArkimeSession_t *session)
 {
     uint8_t  buf[0xffff * 5];
     BSB      bsb;
     int      files = 0;
     int64_t  filePos[1024];
+
+    filePos[0] = 0;
 
     BSB_INIT(bsb, buf, sizeof(buf));
 
@@ -927,11 +935,13 @@ void writer_simple_index (ArkimeSession_t *session)
     g_array_append_vals(session->filePosArray, filePos, files * 3);
 }
 /******************************************************************************/
-void writer_simple_init(char *name)
+void writer_simple_init(const char *name)
 {
     arkime_writer_queue_length = writer_simple_queue_length;
     arkime_writer_exit         = writer_simple_exit;
     arkime_writer_write        = writer_simple_write;
+
+    arkime_config_check("simple", "simpleKEKId", "simpleMaxQ", "simpleEncoding", "simpleCompression", "simpleGzipLevel", "simpleZstdLevel", "simpleCompressionBlockSize", "simpleShortHeader", "simpleFreeOutputBuffers", NULL);
 
     simpleMaxQ = arkime_config_int(NULL, "simpleMaxQ", 2000, 50, 0xffff);
     char *mode = arkime_config_str(NULL, "simpleEncoding", NULL);

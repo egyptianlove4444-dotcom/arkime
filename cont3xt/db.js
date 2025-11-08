@@ -14,6 +14,7 @@ const LinkGroup = require('./linkGroup');
 const ArkimeUtil = require('../common/arkimeUtil');
 const ArkimeConfig = require('../common/arkimeConfig');
 const cryptoLib = require('crypto');
+const util = require('util');
 
 class Db {
   static async initialize (options) {
@@ -223,7 +224,7 @@ class DbESImplementation {
     } catch (err) {
       // If already exists ignore error
       if (err.meta.body?.error?.type !== 'resource_already_exists_exception') {
-        console.log(err);
+        console.log('createLinksIndex', util.inspect(err, false, 10));
         process.exit(0);
       }
     }
@@ -260,7 +261,7 @@ class DbESImplementation {
     } catch (err) {
       // If already exists ignore error
       if (err.meta.body?.error?.type !== 'resource_already_exists_exception') {
-        console.log(err);
+        console.log('createViewIndex', util.inspect(err, false, 10));
         process.exit(0);
       }
     }
@@ -294,7 +295,7 @@ class DbESImplementation {
     } catch (err) {
       // If already exists ignore error
       if (err.meta.body?.error?.type !== 'resource_already_exists_exception') {
-        console.log(err);
+        console.log('createHistoryIndex', util.inspect(err, false, 10));
         process.exit(0);
       }
     }
@@ -341,7 +342,7 @@ class DbESImplementation {
     } catch (err) {
       // If already exists ignore error
       if (err.meta.body?.error?.type !== 'resource_already_exists_exception') {
-        console.log(err);
+        console.log('createOverviewIndex', util.inspect(err, false, 10));
         process.exit(0);
       }
     }
@@ -517,7 +518,7 @@ class DbESImplementation {
 
       return views;
     } catch (err) {
-      console.log('ERROR FETCHING VIEWS', err);
+      console.log('ERROR FETCHING VIEWS', util.inspect(err, false, 10));
       return [];
     }
   }
@@ -614,7 +615,7 @@ class DbESImplementation {
     };
 
     try {
-      const results = await this.client.delete_by_query({
+      const results = await this.client.deleteByQuery({
         body: query,
         index: 'cont3xt_history'
       });
@@ -625,13 +626,13 @@ class DbESImplementation {
   }
 
   async getMatchingAudits (userId, roles, reqQuery) {
-    const { startMs, stopMs, searchTerm } = reqQuery;
+    const { startMs, stopMs, searchTerm, page, itemsPerPage, sortBy, sortOrder } = reqQuery;
     const filter = [];
     const query = {
-      size: 1000,
-      query: {
-        bool: { filter }
-      }
+      size: itemsPerPage || 1000,
+      from: (page - 1) * itemsPerPage || 0,
+      query: { bool: { filter } },
+      sort: [{ [sortBy]: { order: sortOrder || 'desc' } }]
     };
 
     if (startMs != null && stopMs != null) {
@@ -667,12 +668,16 @@ class DbESImplementation {
       });
 
       const hits = results.body.hits.hits;
+      const total = results.body.hits.total;
 
-      return hits.map(({ _id, _source }) => {
-        return new Audit(Object.assign(_source, { _id }));
-      });
+      return {
+        total,
+        audits: hits.map(({ _id, _source }) => {
+          return new Audit(Object.assign(_source, { _id }));
+        })
+      };
     } catch (err) {
-      console.log('ERROR - fetching audit log history', err);
+      console.log('ERROR - fetching audit log history', util.inspect(err, false, 10));
       return [];
     }
   }
@@ -889,8 +894,8 @@ class DbLMDBImplementation {
   }
 
   async getMatchingAudits (userId, roles, reqQuery) {
-    const { startMs, stopMs, searchTerm } = reqQuery;
-    return [...this.auditStore.getRange({})
+    const { startMs, stopMs, searchTerm, page, itemsPerPage, sortBy, sortOrder } = reqQuery;
+    let audits = [...this.auditStore.getRange({})
       .filter(({ _, value }) => {
         // remove entries outside the dateRange, if there is one
         if ((startMs != null && stopMs != null) && (value.issuedAt < startMs || value.issuedAt > stopMs)) {
@@ -913,6 +918,18 @@ class DbLMDBImplementation {
       }).map(({ key, value }) => new Audit( // create Audit objs with _id
         Object.assign(value, { _id: key }))
       )];
+
+    const total = audits.length; // save this for paging
+
+    // sort and page the audits
+    audits = audits.sort((a, b) => {
+      if (sortBy === 'indicator' || sortBy === 'iType') {
+        return sortOrder === 'asc' ? a[sortBy].localeCompare(b[sortBy]) : b[sortBy].localeCompare(a[sortBy]);
+      }
+      return sortOrder === 'asc' ? a[sortBy] - b[sortBy] : b[sortBy] - a[sortBy];
+    }).slice((page - 1) * itemsPerPage, page * itemsPerPage);
+
+    return { audits, total };
   }
 
   async getAudit (id) {

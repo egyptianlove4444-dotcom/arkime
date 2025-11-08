@@ -20,7 +20,7 @@ extern uint32_t              pluginsCbs;
 
 /******************************************************************************/
 SUPPRESS_ALIGNMENT
-void udp_create_sessionid(uint8_t *sessionId, ArkimePacket_t *packet)
+LOCAL void udp_create_sessionid(uint8_t *sessionId, ArkimePacket_t *packet)
 {
     const struct ip         *ip4 = (struct ip *)(packet->pkt + packet->ipOffset);
     const struct ip6_hdr    *ip6 = (struct ip6_hdr *)(packet->pkt + packet->ipOffset);
@@ -28,15 +28,16 @@ void udp_create_sessionid(uint8_t *sessionId, ArkimePacket_t *packet)
 
     if (packet->v6) {
         arkime_session_id6(sessionId, ip6->ip6_src.s6_addr, udphdr->uh_sport,
-                           ip6->ip6_dst.s6_addr, udphdr->uh_dport);
+                           ip6->ip6_dst.s6_addr, udphdr->uh_dport,
+                           packet->vlan, packet->vni);
     } else {
         arkime_session_id(sessionId, ip4->ip_src.s_addr, udphdr->uh_sport,
-                          ip4->ip_dst.s_addr, udphdr->uh_dport);
+                          ip4->ip_dst.s_addr, udphdr->uh_dport, packet->vlan, packet->vni);
     }
 }
 /******************************************************************************/
 SUPPRESS_ALIGNMENT
-int udp_pre_process(ArkimeSession_t *session, ArkimePacket_t *const packet, int isNewSession)
+LOCAL int udp_pre_process(ArkimeSession_t *session, ArkimePacket_t *const packet, int isNewSession)
 {
     const struct ip           *ip4 = (struct ip *)(packet->pkt + packet->ipOffset);
     const struct ip6_hdr      *ip6 = (struct ip6_hdr *)(packet->pkt + packet->ipOffset);
@@ -60,15 +61,17 @@ int udp_pre_process(ArkimeSession_t *session, ArkimePacket_t *const packet, int 
     packet->direction = (dir &&
                          session->port1 == ntohs(udphdr->uh_sport) &&
                          session->port2 == ntohs(udphdr->uh_dport)) ? 0 : 1;
-    session->databytes[packet->direction] += (packet->pktlen - packet->payloadOffset - 8);
+    session->databytes[packet->direction] += MIN(ntohs(udphdr->uh_ulen),
+                                                 packet->pktlen - packet->payloadOffset) - 8;
 
     return 0;
 }
 /******************************************************************************/
-int udp_process(ArkimeSession_t *session, ArkimePacket_t *const packet)
+LOCAL int udp_process(ArkimeSession_t *session, ArkimePacket_t *const packet)
 {
     const uint8_t *data = packet->pkt + packet->payloadOffset + 8;
-    int            len = packet->payloadLen - 8;
+    int            len = MIN((packet->pkt[packet->payloadOffset + 4] << 8 | packet->pkt[packet->payloadOffset + 5]),
+                             packet->payloadLen) - 8;
 
     if (len <= 0)
         return 1;
@@ -84,19 +87,7 @@ int udp_process(ArkimeSession_t *session, ArkimePacket_t *const packet)
         }
     }
 
-    int i;
-    for (i = 0; i < session->parserNum; i++) {
-        if (session->parserInfo[i].parserFunc) {
-            int consumed = session->parserInfo[i].parserFunc(session, session->parserInfo[i].uw, data, len, packet->direction);
-            if (consumed == ARKIME_PARSER_UNREGISTER) {
-                if (session->parserInfo[i].parserFreeFunc) {
-                    session->parserInfo[i].parserFreeFunc(session, session->parserInfo[i].uw);
-                }
-                memset(&session->parserInfo[i], 0, sizeof(session->parserInfo[i]));
-                continue;
-            }
-        }
-    }
+    arkime_packet_process_data(session, data, len, packet->direction);
 
     if (pluginsCbs & ARKIME_PLUGIN_UDP)
         arkime_plugins_cb_udp(session, data, len, packet->direction);

@@ -16,10 +16,17 @@
                "packets" : 0,
                "port" : 88
             },
+            "dot1q" : {
+               "id" : [
+                  300
+               ],
+               "idCnt" : 1
+            },
             "dstOui" : [
                "ICANN, IANA Department"
             ],
             "dstOuiCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1466252055201,
             "ipProtocol" : 17,
@@ -81,6 +88,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "6a81f83081f5a103",
+            "srcTTL" : [
+               63
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 251
          },
          "header" : {

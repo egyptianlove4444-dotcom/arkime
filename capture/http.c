@@ -97,11 +97,15 @@ struct arkimehttpserver_t {
     ArkimeHttpServerName_t  *snames;
     ArkimeClientAuth_t      *clientAuth;
     char                   **defaultHeaders;
+    char                    *userpwd;
+    char                    *aws_sigv4;
     uint64_t                 timeout;
     int                      snamesCnt;
     int                      snamesPos;
     char                     compress;
     char                     printErrors;
+    char                     insecure;
+    char                     dontFreeResponse;
     uint16_t                 maxConns;
     uint16_t                 maxOutstandingRequests;
     uint16_t                 outstanding;
@@ -123,6 +127,10 @@ LOCAL ARKIME_LOCK_DEFINE(z_strm);
 
 LOCAL gboolean arkime_http_send_timer_callback(gpointer);
 LOCAL void arkime_http_add_request(ArkimeHttpServer_t *server, ArkimeHttpRequest_t *request, int priority);
+
+LOCAL uint32_t httpVLanVNI;
+
+LOCAL GHashTable *servers;
 
 /******************************************************************************/
 LOCAL int arkime_http_conn_cmp(const void *keyv, const ArkimeHttpConn_t *conn)
@@ -201,7 +209,7 @@ uint8_t *arkime_http_send_sync(void *serverV, const char *method, const char *ke
         easy = server->syncRequest.easy;
     }
 
-    if (config.insecure) {
+    if (server->insecure) {
         curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
     }
@@ -232,6 +240,14 @@ uint8_t *arkime_http_send_sync(void *serverV, const char *method, const char *ke
 
     if (headerList) {
         curl_easy_setopt(easy, CURLOPT_HTTPHEADER, headerList);
+    }
+
+    if (server->userpwd) {
+        curl_easy_setopt(easy, CURLOPT_USERPWD, server->userpwd);
+    }
+
+    if (server->aws_sigv4) {
+        curl_easy_setopt(easy, CURLOPT_AWS_SIGV4, server->aws_sigv4);
     }
 
     if (key_len == -1)
@@ -429,7 +445,8 @@ LOCAL void arkime_http_curlm_check_multi_info(ArkimeHttpServer_t *server)
                     request->func(responseCode, request->dataIn, request->used, request->uw);
                 }
                 if (request->dataIn) {
-                    free(request->dataIn);
+                    if (!server->dontFreeResponse)
+                        free(request->dataIn);
                     request->dataIn = 0;
                 }
                 if (request->dataOut) {
@@ -520,7 +537,7 @@ LOCAL int arkime_http_curlm_timeout_callback(CURLM *UNUSED(multi), long timeout_
 }
 
 /******************************************************************************/
-size_t arkime_http_curlm_header_function(char *buffer, size_t size, size_t nitems, void *requestP)
+LOCAL size_t arkime_http_curlm_header_function(char *buffer, size_t size, size_t nitems, void *requestP)
 {
     ArkimeHttpRequest_t *request = requestP;
     int sz = size * nitems;
@@ -568,7 +585,7 @@ LOCAL gboolean arkime_http_curl_watch_open_callback(int fd, GIOCondition conditi
         struct sockaddr_in *localAddress = (struct sockaddr_in *)&localAddressStorage;
         struct sockaddr_in *remoteAddress = (struct sockaddr_in *)&remoteAddressStorage;
         arkime_session_id(sessionId, localAddress->sin_addr.s_addr, localAddress->sin_port,
-                          remoteAddress->sin_addr.s_addr, remoteAddress->sin_port);
+                          remoteAddress->sin_addr.s_addr, remoteAddress->sin_port, httpVLanVNI, httpVLanVNI);
         localPort = ntohs(localAddress->sin_port);
         remotePort = ntohs(remoteAddress->sin_port);
         inet_ntop(AF_INET, &remoteAddress->sin_addr, remoteIp, sizeof(remoteIp));
@@ -576,7 +593,7 @@ LOCAL gboolean arkime_http_curl_watch_open_callback(int fd, GIOCondition conditi
         struct sockaddr_in6 *localAddress = (struct sockaddr_in6 *)&localAddressStorage;
         struct sockaddr_in6 *remoteAddress = (struct sockaddr_in6 *)&remoteAddressStorage;
         arkime_session_id6(sessionId, localAddress->sin6_addr.s6_addr, localAddress->sin6_port,
-                           remoteAddress->sin6_addr.s6_addr, remoteAddress->sin6_port);
+                           remoteAddress->sin6_addr.s6_addr, remoteAddress->sin6_port, httpVLanVNI, httpVLanVNI);
         localPort = ntohs(localAddress->sin6_port);
         remotePort = ntohs(remoteAddress->sin6_port);
         inet_ntop(AF_INET6, &remoteAddress->sin6_addr, remoteIp + 1, sizeof(remoteIp) - 2);
@@ -617,7 +634,7 @@ LOCAL gboolean arkime_http_curl_watch_open_callback(int fd, GIOCondition conditi
     return CURLE_OK;
 }
 /******************************************************************************/
-curl_socket_t arkime_http_curl_open_callback(void *snameV, curlsocktype UNUSED(purpose), struct curl_sockaddr *addr)
+LOCAL curl_socket_t arkime_http_curl_open_callback(void *snameV, curlsocktype UNUSED(purpose), struct curl_sockaddr *addr)
 {
     ArkimeHttpServerName_t    *sname = snameV;
     ArkimeHttpServer_t        *server = sname->server;
@@ -629,7 +646,7 @@ curl_socket_t arkime_http_curl_open_callback(void *snameV, curlsocktype UNUSED(p
     return fd;
 }
 /******************************************************************************/
-int arkime_http_curl_close_callback(void *snameV, curl_socket_t fd)
+LOCAL int arkime_http_curl_close_callback(void *snameV, curl_socket_t fd)
 {
     ArkimeHttpServerName_t    *sname = snameV;
     ArkimeHttpServer_t        *server = sname->server;
@@ -668,7 +685,7 @@ int arkime_http_curl_close_callback(void *snameV, curl_socket_t fd)
         struct sockaddr_in *localAddress = (struct sockaddr_in *)&localAddressStorage;
         struct sockaddr_in *remoteAddress = (struct sockaddr_in *)&remoteAddressStorage;
         arkime_session_id(sessionId, localAddress->sin_addr.s_addr, localAddress->sin_port,
-                          remoteAddress->sin_addr.s_addr, remoteAddress->sin_port);
+                          remoteAddress->sin_addr.s_addr, remoteAddress->sin_port, httpVLanVNI, httpVLanVNI);
         localPort = ntohs(localAddress->sin_port);
         remotePort = ntohs(remoteAddress->sin_port);
         inet_ntop(AF_INET, &remoteAddress->sin_addr, remoteIp, sizeof(remoteIp));
@@ -676,7 +693,7 @@ int arkime_http_curl_close_callback(void *snameV, curl_socket_t fd)
         struct sockaddr_in6 *localAddress = (struct sockaddr_in6 *)&localAddressStorage;
         struct sockaddr_in6 *remoteAddress = (struct sockaddr_in6 *)&remoteAddressStorage;
         arkime_session_id6(sessionId, localAddress->sin6_addr.s6_addr, localAddress->sin6_port,
-                           remoteAddress->sin6_addr.s6_addr, remoteAddress->sin6_port);
+                           remoteAddress->sin6_addr.s6_addr, remoteAddress->sin6_port, httpVLanVNI, httpVLanVNI);
         localPort = ntohs(localAddress->sin6_port);
         remotePort = ntohs(remoteAddress->sin6_port);
         inet_ntop(AF_INET6, &remoteAddress->sin6_addr, remoteIp + 1, sizeof(remoteIp) - 2);
@@ -761,10 +778,10 @@ gboolean arkime_http_schedule2(void *serverV, const char *method, const char *ke
     if (!config.quitting && server->outstanding > server->maxOutstandingRequests) {
         int drop = FALSE;
         if (priority == ARKIME_HTTP_PRIORITY_DROPABLE) {
-            LOG("ERROR - Dropping request (https://arkime.com/faq#error-dropping-request) %.*s of size %u queue %u is too big", key_len, key, data_len, server->outstanding);
+            LOG("WARNING - Dropping request to overwhelmed server, please see https://arkime.com/faq#error-dropping-request for help! size: %u queue: %u path: %.*s", data_len, server->outstanding, key_len, key);
             drop = TRUE;
         } else if (priority == ARKIME_HTTP_PRIORITY_NORMAL && server->outstanding > server->maxOutstandingRequests * 2) {
-            LOG("ERROR - Dropping request (https://arkime.com/faq#error-dropping-request) %.*s of size %u queue %u is WAY too big", key_len, key, data_len, server->outstanding);
+            LOG("ERROR - Dropping request to overwhelmed server, please see https://arkime.com/faq#error-dropping-request for help! size: %u queue: %u path: %.*s", data_len, server->outstanding, key_len, key);
             drop = TRUE;
         }
 
@@ -837,7 +854,7 @@ gboolean arkime_http_schedule2(void *serverV, const char *method, const char *ke
         curl_easy_setopt(request->easy, CURLOPT_VERBOSE, 1);
     }
 
-    if (config.insecure) {
+    if (server->insecure) {
         curl_easy_setopt(request->easy, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(request->easy, CURLOPT_SSL_VERIFYHOST, 0L);
     }
@@ -866,6 +883,14 @@ gboolean arkime_http_schedule2(void *serverV, const char *method, const char *ke
 
     if (request->headerList) {
         curl_easy_setopt(request->easy, CURLOPT_HTTPHEADER, request->headerList);
+    }
+
+    if (server->userpwd) {
+        curl_easy_setopt(request->easy, CURLOPT_USERPWD, server->userpwd);
+    }
+
+    if (server->aws_sigv4) {
+        curl_easy_setopt(request->easy, CURLOPT_AWS_SIGV4, server->aws_sigv4);
     }
 
     if (method[0] != 'G') {
@@ -1017,6 +1042,27 @@ void arkime_http_set_print_errors(void *serverV)
     server->printErrors = 1;
 }
 /******************************************************************************/
+void arkime_http_set_userpwd(void *serverV, const char *userpwd)
+{
+    ArkimeHttpServer_t        *server = serverV;
+
+    server->userpwd = strdup(userpwd);
+}
+/******************************************************************************/
+void arkime_http_set_aws_sigv4(void *serverV, const char *aws_sigv4)
+{
+    ArkimeHttpServer_t        *server = serverV;
+
+    server->aws_sigv4 = strdup(aws_sigv4);
+}
+/******************************************************************************/
+void arkime_http_set_dont_free_response(void *serverV)
+{
+    ArkimeHttpServer_t        *server = serverV;
+
+    server->dontFreeResponse = 1;
+}
+/******************************************************************************/
 gboolean arkime_http_is_arkime(uint32_t hash, uint8_t *sessionId)
 {
     ArkimeHttpConn_t *conn;
@@ -1059,6 +1105,16 @@ void *arkime_http_create_server(const char *hostnames, int maxConns, int maxOuts
         LOGEXIT("ERROR - No valid endpoints in string '%s'", hostnames);
     }
 
+    server->insecure = config.insecure; // Default to global setting
+
+    // If https to localhost or 127.0.0.1 we don't check the cert
+    if (!config.insecure &&
+        (strncmp("https://localhost", server->snames[0].name, 17) == 0 ||
+         strncmp("https://127.0.0.1", server->snames[0].name, 17) == 0)) {
+        LOG("WARNING - Using insecure mode for %s", server->snames[0].name);
+        server->insecure = 1;
+    }
+
     server->multi = curl_multi_init();
     curl_multi_setopt(server->multi, CURLMOPT_SOCKETFUNCTION, arkime_http_curlm_socket_callback);
     curl_multi_setopt(server->multi, CURLMOPT_SOCKETDATA, server);
@@ -1073,6 +1129,24 @@ void *arkime_http_create_server(const char *hostnames, int maxConns, int maxOuts
 
     ARKIME_LOCK_INIT(server->syncRequest);
 
+    httpVLanVNI = arkime_config_int(NULL, "httpVLanVNI", 0, 0, 0xffffff);
+
+    return server;
+}
+/******************************************************************************/
+void *arkime_http_get_or_create_server(const char *name, const char *hostnames, int maxConns, int maxOutstandingRequests, int compress, int *isNew)
+{
+    void *server = g_hash_table_lookup(servers, name);
+    if (!server) {
+        if (isNew)
+            *isNew = 1;
+        server = arkime_http_create_server(hostnames, maxConns, maxOutstandingRequests, compress);
+        arkime_http_set_timeout(server, 0);
+        g_hash_table_insert(servers, g_strdup(name), server);
+    } else {
+        if (isNew)
+            *isNew = 0;
+    }
     return server;
 }
 /******************************************************************************/
@@ -1089,6 +1163,10 @@ void arkime_http_init()
     for (int r = 0; r <= PRIORITY_MAX; r++) {
         DLL_INIT(rqt_, &requests[r]);
     }
+
+    servers = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, arkime_http_free_server);
+
+    // Can NOT have config_ calls here since need to fetch config
 }
 /******************************************************************************/
 void arkime_http_exit()

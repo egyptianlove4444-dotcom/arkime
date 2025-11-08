@@ -33,8 +33,6 @@ class Config {
 
   static esProfile = false;
 
-  static #keyFileLocation;
-  static #certFileLocation;
   static keyFileData;
   static certFileData;
 
@@ -258,9 +256,11 @@ class Config {
       }
 
       internals.fieldsMap[field._id] = source;
-      internals.dbFieldsMap[source.dbField] = source;
-      if (source.dbField2 !== undefined) {
-        internals.dbFieldsMap[source.dbField2] = source;
+      if (!source.noFacet) {
+        internals.dbFieldsMap[source.dbField] = source;
+        if (source.dbField2 !== undefined) {
+          internals.dbFieldsMap[source.dbField2] = source;
+        }
       }
       if (source.fieldECS !== undefined) {
         internals.dbFieldsMap[source.fieldECS] = source;
@@ -289,7 +289,7 @@ class Config {
   // Initialize Auth
   /// ///////////////////////////////////////////////////////////////////////////////
 
-  static async initialize () {
+  static async initialize (options) {
     const sections = [internals.nodeName];
     if (internals.nodeName !== 'cont3xt') {
       sections.push('default');
@@ -298,8 +298,8 @@ class Config {
     ArkimeConfig.loaded(() => {
       // If add user is called with cont3xt/parliament don't need default section, everything else does
       if (internals.nodeName !== 'cont3xt' && internals.nodeName !== 'parliament' && ArkimeConfig.getSection('default') === undefined) {
-        console.log('ERROR - [default] section missing from', ArkimeConfig.configFile);
-        process.exit(1);
+        console.log('WARNING - [default] section missing from', ArkimeConfig.configFile);
+        // process.exit(1);
       }
 
       const nodeClass = ArkimeConfig.getFull([internals.nodeName], 'nodeClass');
@@ -313,13 +313,15 @@ class Config {
       defaultSections: sections
     });
 
-    Auth.initialize({
-      appAdminRole: 'arkimeAdmin',
-      basePath: Config.basePath(),
-      passwordSecretSection: internals.nodeName === 'cont3xt' ? 'cont3xt' : 'default',
-      s2s: true,
-      s2sRegressionTests: !!Config.get('s2sRegressionTests')
-    });
+    if (options?.initAuth) {
+      Auth.initialize({
+        appAdminRole: 'arkimeAdmin',
+        basePath: Config.basePath(),
+        passwordSecretSection: internals.nodeName === 'cont3xt' ? 'cont3xt' : 'default',
+        s2s: true,
+        s2sRegressionTests: !!Config.get('s2sRegressionTests')
+      });
+    }
   }
 }
 

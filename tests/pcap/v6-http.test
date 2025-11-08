@@ -16,6 +16,7 @@
                "packets" : 0,
                "port" : 0
             },
+            "ethertype" : 34525,
             "fileId" : [],
             "firstPacket" : 1186341079159,
             "icmp" : {
@@ -31,6 +32,7 @@
             "length" : 302005,
             "network" : {
                "bytes" : 2838,
+               "community_id" : "1:0fx8iuIOVuN5EqSAPlk7AsecuJg=",
                "packets" : 33
             },
             "node" : "test",
@@ -126,6 +128,10 @@
                "IBM Corp"
             ],
             "srcOuiCnt" : 1,
+            "srcTTL" : [
+               255
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 1056
          },
          "header" : {
@@ -150,6 +156,7 @@
                "packets" : 0,
                "port" : 0
             },
+            "ethertype" : 34525,
             "fileId" : [],
             "firstPacket" : 1186341098054,
             "icmp" : {
@@ -165,6 +172,7 @@
             "length" : 5859,
             "network" : {
                "bytes" : 180,
+               "community_id" : "1:N1pYzX56SZ4pCJrRuglkQ+2ylvE=",
                "packets" : 2
             },
             "node" : "test",
@@ -198,6 +206,10 @@
                "Hsing Tech. Enterprise Co. Ltd"
             ],
             "srcOuiCnt" : 1,
+            "srcTTL" : [
+               1
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 56
          },
          "header" : {
@@ -222,6 +234,7 @@
                "packets" : 0,
                "port" : 0
             },
+            "ethertype" : 34525,
             "fileId" : [],
             "firstPacket" : 1186341098474,
             "icmp" : {
@@ -237,6 +250,7 @@
             "length" : 0,
             "network" : {
                "bytes" : 78,
+               "community_id" : "1:eilndz0cTfzOL/w14PcBW0lsMzo=",
                "packets" : 1
             },
             "node" : "test",
@@ -268,6 +282,10 @@
                "Hsing Tech. Enterprise Co. Ltd"
             ],
             "srcOuiCnt" : 1,
+            "srcTTL" : [
+               255
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 24
          },
          "header" : {
@@ -292,6 +310,7 @@
                "packets" : 0,
                "port" : 5353
             },
+            "ethertype" : 34525,
             "fileId" : [],
             "firstPacket" : 1186341099605,
             "ipProtocol" : 17,
@@ -358,6 +377,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "0000000000020000",
+            "srcTTL" : [
+               255
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "dns:qdcount-not-1"
             ],
@@ -386,6 +409,7 @@
                "packets" : 0,
                "port" : 0
             },
+            "ethertype" : 34525,
             "fileId" : [],
             "firstPacket" : 1186341269082,
             "icmp" : {
@@ -401,6 +425,7 @@
             "length" : 0,
             "network" : {
                "bytes" : 110,
+               "community_id" : "1:0MCR19cydrs2qJRBo+L/DglvPSE=",
                "packets" : 1
             },
             "node" : "test",
@@ -432,6 +457,10 @@
                "IBM Corp"
             ],
             "srcOuiCnt" : 1,
+            "srcTTL" : [
+               255
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 56
          },
          "header" : {
@@ -471,6 +500,11 @@
             ],
             "dstOuiCnt" : 1,
             "dstPayload8" : "485454502f312e31",
+            "dstTTL" : [
+               64
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 34525,
             "fileId" : [],
             "firstPacket" : 1186341404189,
             "http" : {
@@ -630,6 +664,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "474554202f204854",
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "tcpflags" : {
                "ack" : 4,
                "dstZero" : 0,
@@ -640,6 +678,10 @@
                "syn" : 1,
                "syn-ack" : 1,
                "urg" : 0
+            },
+            "tcpseq" : {
+               "dst" : 0,
+               "src" : 2883376736
             },
             "totDataBytes" : 2499
          },

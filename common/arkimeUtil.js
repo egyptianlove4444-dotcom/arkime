@@ -19,6 +19,7 @@ const path = require('path');
 const crypto = require('crypto');
 const logger = require('morgan');
 const express = require('express');
+const ini = require('js-ini');
 
 class ArkimeUtil {
   static adminRole;
@@ -29,7 +30,9 @@ class ArkimeUtil {
    */
   static jsonParser = bodyParser.json({
     verify: function (req, res, buf, encoding) {
-      sjson.parse(buf);
+      if (buf !== undefined && buf.length) {
+        sjson.parse(buf);
+      }
     }
   });
 
@@ -56,7 +59,7 @@ class ArkimeUtil {
   static sanitizeStr (str) {
     if (!str) { return str; }
     if (typeof str === 'object') { str = util.inspect(str); }
-    // eslint-disable-next-line no-control-regex
+
     return str.replace(/\u001b/g, '*ESC*');
   }
 
@@ -110,6 +113,18 @@ class ArkimeUtil {
 
     return ret;
   };
+
+  // ----------------------------------------------------------------------------
+  /**
+   * Does this string try and do some prototype pollution
+   */
+  static isPP (str) {
+    if (Array.isArray(str)) {
+      return str.includes('__proto__') || str.includes('constructor');
+    }
+
+    return str === '__proto__' || str === 'constructor';
+  }
 
   // ----------------------------------------------------------------------------
   /**
@@ -220,6 +235,45 @@ class ArkimeUtil {
 
     console.log(`${section} - Unknown redis url '%s'`, url);
     process.exit(1);
+  }
+
+  // ----------------------------------------------------------------------------
+  /**
+   * Parse the elasticsearch url and return the url and possible auth object
+   */
+  static createElasticsearchInfo (url) {
+    url = url.split(',')[0];
+    url = url.replace(/^elasticsearch/, 'http').replace(/^opensearch/, 'http');
+    let auth;
+    if (url.includes('://usersElasticsearch')) {
+      let es, basicAuth;
+
+      if (ArkimeConfig.get('usersElasticsearch')) {
+        es = ArkimeConfig.get('usersElasticsearch');
+        basicAuth = ArkimeConfig.get('usersElasticsearchBasicAuth');
+      }
+
+      if (!es) {
+        console.log(`ERROR - No usersElasticsearch defined but used in ${url}`);
+        process.exit(1);
+      }
+
+      url = url.replace(/^.*:\/\/usersElasticsearch/, es);
+
+      if (basicAuth) {
+        if (!basicAuth.includes(':')) {
+          basicAuth = Buffer.from(basicAuth, 'base64').toString();
+        }
+        basicAuth = ArkimeUtil.splitRemain(basicAuth, ':', 1);
+
+        auth = {
+          username: basicAuth[0],
+          password: basicAuth[1]
+        };
+      }
+    }
+
+    return { url, auth };
   }
 
   // ----------------------------------------------------------------------------
@@ -490,7 +544,8 @@ class ArkimeUtil {
         process.exit(1);
       })
       .on('listening', (e) => {
-        console.log('Express server listening on host %s port %d in %s mode', server.address().address, server.address().port, app.settings.env);
+        console.log('%s listening on host %s port %d in %s mode', process.argv[1], server.address().address, server.address().port, app.settings.env);
+        console.log('Open your web browser to http://localhost:%d/', server.address().port);
       })
       .listen({ port, host }, listenCb);
 
@@ -593,11 +648,56 @@ class ArkimeUtil {
     console.log(msg, '- the above error message might explain why');
     console.log('Common issues:');
     console.log('  * Is OpenSearch/Elasticsearch running and NOT RED?');
-    console.log('  * Have you run \'db/db.pl <host:port> init\'?');
+    console.log(`  * Have you run 'db/db.pl <host:port> init'?`);
     console.log(`  * Is the 'elasticsearch' setting (${host}) correct in config file (${ArkimeConfig.configFile}) with a username and password if needed? (https://arkime.com/settings#elasticsearch)`);
     if (!ArkimeConfig.insecure) {
       console.log('  * Do you need the --insecure option? (See https://arkime.com/faq#insecure)');
     }
+  }
+
+  // ----------------------------------------------------------------------------
+  /**
+   * Parse INI file synchronously.
+   * @param {string} configFile Path to config file.
+   * @returns An object with the parsed INI file.
+   */
+  static parseIniSync (configFile) {
+    const file = fs.readFileSync(configFile, { encoding: 'utf-8' });
+    const parseResult = ArkimeUtil.parseIniString(file);
+    return parseResult;
+  }
+
+  // ----------------------------------------------------------------------------
+  /**
+   * Parses an INI file string.
+   * @param {string} str INI file string to parse.
+   * @returns An object with the parsed INI file.
+   */
+  static parseIniString (str) {
+    return ini.parse(str, { comment: ['#', ';'], autoTyping: false });
+  }
+
+  // ----------------------------------------------------------------------------
+  static #evpBytesToKey (password, keyLen, ivLen) {
+    let data = Buffer.alloc(0);
+    let prev = Buffer.alloc(0);
+    while (data.length < keyLen + ivLen) {
+      const toHash = Buffer.concat([prev, Buffer.from(password)]);
+      prev = crypto.createHash('md5').update(toHash).digest();
+      data = Buffer.concat([data, prev]);
+    }
+    const key = data.slice(0, keyLen);
+    const iv = data.slice(keyLen, keyLen + ivLen);
+    return { key, iv };
+  }
+
+  // ----------------------------------------------------------------------------
+  /**
+   * Create a decipher object with AES-192-CBC algorithm and no IV like cryptoDeipher did
+   */
+  static createDecipherAES192NoIV (password) {
+    const result = ArkimeUtil.#evpBytesToKey(password, 24, 16);
+    return crypto.createDecipheriv('aes-192-cbc', result.key, result.iv);
   }
 }
 

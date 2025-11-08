@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const MIN_DB_VERSION = 79;
+const MIN_DB_VERSION = 80;
 
 // ============================================================================
 // MODULES
@@ -30,6 +30,7 @@ const User = require('../common/user');
 const Auth = require('../common/auth');
 const ArkimeUtil = require('../common/arkimeUtil');
 const ArkimeConfig = require('../common/arkimeConfig');
+const Locales = require('../common/locales');
 
 // express app
 const app = express();
@@ -89,9 +90,11 @@ const cspDirectives = {
   objectSrc: ["'none'"],
   imgSrc: ["'self'", 'data:']
 };
-const cspHeader = helmet.contentSecurityPolicy({
-  directives: cspDirectives
-});
+const cspHeader = (process.env.NODE_ENV === 'development')
+  ? (_req, _res, next) => { next(); }
+  : helmet.contentSecurityPolicy({
+    directives: cspDirectives
+  });
 const cyberchefCspHeader = helmet.contentSecurityPolicy({
   directives: {
     defaultSrc: ["'self'"],
@@ -109,13 +112,19 @@ app.use(securityApp);
 ArkimeConfig.loaded(() => {
   // app security options -------------------------------------------------------
   const iframeOption = Config.get('iframe', 'deny');
-  if (iframeOption === 'sameorigin' || iframeOption === 'deny') {
+  switch (iframeOption) {
+  case 'allow':
+    break;
+  case 'sameorigin':
+  case 'deny':
     securityApp.use(helmet.frameguard({ action: iframeOption }));
-  } else {
+    break;
+  default:
     securityApp.use(helmet.frameguard({
       action: 'allow-from',
       domain: iframeOption
     }));
+    break;
   }
 
   securityApp.use(helmet.hidePoweredBy());
@@ -160,8 +169,17 @@ app.use('/font-awesome', express.static(
   path.join(__dirname, '/../node_modules/font-awesome'),
   { maxAge: dayMs, fallthrough: false }
 ), ArkimeUtil.missingResource);
+// PRODUCTION BUNDLE (created by vite) - includes bundled js, css, & assets!
+app.use('/assets', express.static(
+  path.join(__dirname, 'vueapp/dist/assets'),
+  { maxAge: dayMs, fallthrough: true }
+));
 app.use(['/assets', '/logos'], express.static(
   path.join(__dirname, '../assets'),
+  { maxAge: dayMs, fallthrough: false }
+), ArkimeUtil.missingResource);
+app.use('/public', express.static(
+  path.join(__dirname, '/public'),
   { maxAge: dayMs, fallthrough: false }
 ), ArkimeUtil.missingResource);
 
@@ -234,7 +252,7 @@ if (ArkimeConfig.regressionTests) {
 }
 
 // load balancer test - no authj ----------------------------------------------
-app.use('/_ns_/nstest.html', function (req, res) {
+app.use(['/_ns_/nstest.html', '/health'], function (req, res) {
   res.end();
 });
 
@@ -261,7 +279,7 @@ app.use(async (req, res, next) => {
     return next();
   }
   // For receiveSession there is no user (so no role check can be done) AND must be s2s
-  if (req.url.match(/^\/receiveSession/) || req.url.match(/^\/api\/sessions\/receive/)) {
+  if (req.url.match(/^\/receiveSession/i) || req.url.match(/^\/api\/sessions\/receive/i)) {
     if (req.headers['x-arkime-auth'] === undefined) {
       return res.status(401).send('receive session only allowed s2s');
     } else {
@@ -517,14 +535,6 @@ function checkHeaderToken (req, res, next) {
   }
 }
 
-// used to disable endpoints in multi es mode
-function disableInMultiES (req, res, next) {
-  if (internals.multiES) {
-    return res.serverError(401, 'Not supported in multies');
-  }
-  return next();
-}
-
 async function checkHuntAccess (req, res, next) {
   if (req.user.hasRole('arkimeAdmin')) {
     // an admin can do anything to any hunt
@@ -539,7 +549,7 @@ async function checkHuntAccess (req, res, next) {
         return next();
       }
 
-      return res.serverError(403, 'You cannot change another user\'s hunt unless you have admin privileges');
+      return res.serverError(403, `You cannot change another user's hunt unless you have admin privileges`);
     } catch (err) {
       console.log('ERROR - fetching hunt to check access', err);
       return res.serverError(500, err);
@@ -553,7 +563,7 @@ function checkEsAdminUser (req, res, next) {
       return next();
     }
   } else {
-    if (req.user.hasRole('arkimeAdmin') && !internals.multiES) {
+    if (req.user.hasRole('arkimeAdmin')) {
       return next();
     }
   }
@@ -638,7 +648,7 @@ function logAction (uiPage) {
       if (req._arkimeESQueryIndices) { log.esQueryIndices = req._arkimeESQueryIndices; }
 
       try {
-        Db.historyIt(log);
+        Db.historyIt(log, req.body.cluster ?? req.query.cluster);
       } catch (err) {
         console.log('log history error', err);
       }
@@ -702,7 +712,7 @@ function fillQueryFromBody (req, res, next) {
 // This returns the cached user
 function getSettingUserCache (req, res, next) {
   // If no userId parameter, or userId is ourself then req.user already has our info
-  if (req.query.userId === undefined || req.query.userId === req.user.userId) {
+  if (!req.query.userId || req.query.userId === req.user.userId) {
     req.settingUser = req.user;
     return next();
   }
@@ -927,7 +937,6 @@ function expireDevice (nodes, dirs, minFreeSpaceG, nextCb) {
   }
   const query = {
     _source: ['num', 'name', 'first', 'size', 'node', 'indexFilename'],
-    from: '0',
     size: 500,
     query: {
       bool: {
@@ -955,7 +964,6 @@ function expireDevice (nodes, dirs, minFreeSpaceG, nextCb) {
     console.log('EXPIRE - device query', JSON.stringify(query, false, 2));
   }
 
-  // Keep at least 10 files
   Db.search('files', 'file', query, function (err, data) {
     if (err || data.error || !data.hits) {
       if (Config.debug > 0) {
@@ -967,15 +975,16 @@ function expireDevice (nodes, dirs, minFreeSpaceG, nextCb) {
     if (Config.debug === 1) {
       console.log('EXPIRE - device results hits:', data.hits.hits.length);
     } else if (Config.debug > 1) {
-      console.log('EXPIRE - device results', JSON.stringify(err, false, 2), JSON.stringify(data, false, 2));
+      console.log('EXPIRE - device results', data.hits.hits.length, JSON.stringify(err, false, 2), JSON.stringify(data, false, 2));
     }
 
     if (data.hits.total <= 10) {
-      if (Config.debug > 0) {
-        console.log('EXPIRE - device results not deleting any files since 10 or less');
-      }
+      console.log(`EXPIRE WARNING - not deleting any files since ${data.hits.total} <= 10 minimum files per node. Your disk(s) may fill!!! See https://arkime.com/faq#pcap-deletion`);
       return nextCb();
     }
+
+    // Keep 10 most recent files by truncating array
+    data.hits.hits.length -= 10;
 
     async.forEachSeries(data.hits.hits, function (item, forNextCb) {
       const fields = item._source || item.fields;
@@ -990,10 +999,13 @@ function expireDevice (nodes, dirs, minFreeSpaceG, nextCb) {
         freeG = minFreeSpaceG - 1;
       }
       if (freeG < minFreeSpaceG) {
-        data.hits.total--;
         console.log('Deleting', item);
         if (item.indexFilename) {
-          fs.unlink(item.indexFilename, () => {});
+          fs.unlink(item.indexFilename, (err) => {
+            if (err) {
+              console.log('EXPIRE - error deleting index file', item.indexFilename, err);
+            }
+          });
         }
         return Db.deleteFile(fields.node, item._id, fields.name, forNextCb);
       } else {
@@ -1014,11 +1026,14 @@ function expireCheckDevice (nodes, stat, nextCb) {
   async.forEach(nodes, function (node, cb) {
     let freeSpaceG = Config.getFull(node, 'freeSpaceG', '5%');
     if (freeSpaceG[freeSpaceG.length - 1] === '%') {
-      freeSpaceG = (+freeSpaceG.substr(0, freeSpaceG.length - 1)) * 0.01 * stat.bsize / 1024.0 * stat.blocks / (1024.0 * 1024.0);
+      freeSpaceG = parseFloat(freeSpaceG) * 0.01 * stat.bsize / 1024.0 * stat.blocks / (1024.0 * 1024.0);
+    } else {
+      freeSpaceG = parseFloat(freeSpaceG);
     }
+
     const freeG = stat.bsize / 1024.0 * stat.bavail / (1024.0 * 1024.0);
     if (Config.debug > 0) {
-      console.log(`EXPIRE check device node: ${node} free: ${freeG} freeSpaceG: ${freeSpaceG}`);
+      console.log(`EXPIRE - check device node: ${node} free: ${freeG} freeSpaceG: ${freeSpaceG}`);
     }
     if (freeG < freeSpaceG) {
       doit = true;
@@ -1051,7 +1066,7 @@ function expireCheckAll () {
     async.map(nodes, function (node, cb) {
       const pcapDirs = Config.getFullArray(node, 'pcapDir');
       if (!pcapDirs) {
-        return cb("ERROR - couldn't find pcapDir setting for node: " + node + '\nIf you have it set try running:\nnpm remove iniparser; npm cache clean; npm update iniparser');
+        return cb("ERROR - couldn't find pcapDir setting for node: " + node);
       }
       // Create a mapping from device id to stat information and all directories on that device
       pcapDirs.forEach(function (pcapDir) {
@@ -1235,6 +1250,13 @@ app.get( // user css endpoint
   UserAPIs.getUserCSS
 );
 
+// Locale endpoints ----------------------------------------------------------
+app.get( // get all locales endpoint - returns all locale files at once
+  ['/api/locales'],
+  [ArkimeUtil.noCacheJson, User.checkPermissions(['webEnabled'])],
+  Locales.getLocales
+);
+
 app.post( // get users endpoint
   ['/api/users'],
   [ArkimeUtil.noCacheJson, recordResponseTime, logAction('users'), User.checkRole('usersAdmin')],
@@ -1271,52 +1293,28 @@ app.post( // update user settings endpoint
   UserAPIs.updateUserSettings
 );
 
-app.get( // user custom columns endpoint
-  ['/api/user/columns'],
-  [ArkimeUtil.noCacheJson, getSettingUserCache, User.checkPermissions(['webEnabled'])],
-  UserAPIs.getUserColumns
+app.get( // get user layouts endpoint
+  ['/api/user/layouts/:type'],
+  [ArkimeUtil.noCacheJson, checkCookieToken, logAction(), Auth.getSettingUserDb, User.checkPermissions(['webEnabled'])],
+  UserAPIs.getUserLayouts
 );
 
-app.post( // create user custom columns endpoint
-  ['/api/user/column'],
+app.post( // create user layout endpoint
+  ['/api/user/layouts/:type'],
   [ArkimeUtil.noCacheJson, checkCookieToken, logAction(), Auth.getSettingUserDb],
-  UserAPIs.createUserColumns
+  UserAPIs.createUserLayout
 );
 
-app.put( // update user custom column endpoint
-  ['/api/user/column/:name'],
+app.put( // update user layout endpoint
+  ['/api/user/layouts/:type'],
   [ArkimeUtil.noCacheJson, checkCookieToken, logAction(), Auth.getSettingUserDb],
-  UserAPIs.updateUserColumns
+  UserAPIs.updateUserLayout
 );
 
 app.delete( // delete user custom column endpoint
-  ['/api/user/column/:name'],
+  ['/api/user/layouts/:type/:name'],
   [ArkimeUtil.noCacheJson, checkCookieToken, logAction(), Auth.getSettingUserDb],
-  UserAPIs.deleteUserColumns
-);
-
-app.get( // user spiview fields endpoint
-  ['/api/user/spiview'],
-  [ArkimeUtil.noCacheJson, getSettingUserCache, User.checkPermissions(['webEnabled'])],
-  UserAPIs.getUserSpiviewFields
-);
-
-app.post( // create spiview fields endpoint
-  ['/api/user/spiview'],
-  [ArkimeUtil.noCacheJson, checkCookieToken, logAction(), Auth.getSettingUserDb],
-  UserAPIs.createUserSpiviewFields
-);
-
-app.put( // update user spiview fields endpoint
-  ['/api/user/spiview/:name'],
-  [ArkimeUtil.noCacheJson, checkCookieToken, logAction(), Auth.getSettingUserDb],
-  UserAPIs.updateUserSpiviewFields
-);
-
-app.delete( // delete user spiview fields endpoint
-  ['/api/user/spiview/:name'],
-  [ArkimeUtil.noCacheJson, checkCookieToken, logAction(), Auth.getSettingUserDb],
-  UserAPIs.deleteUserSpiviewFields
+  UserAPIs.deleteUserLayout
 );
 
 app.put( // acknowledge message endpoint
@@ -1596,6 +1594,12 @@ app.post( // include OpenSearch/Elasticsearch shard endpoint
   StatsAPIs.includeESShard
 );
 
+app.post( // include OpenSearch/Elasticsearch shard endpoint
+  ['/api/esshards/:index/:shard/delete'],
+  [ArkimeUtil.noCacheJson, logAction(), checkCookieToken, User.checkRole('arkimeAdmin')],
+  StatsAPIs.deleteESShard
+);
+
 app.get( // OpenSearch/Elasticsearch recovery endpoint
   ['/api/esrecovery'],
   [ArkimeUtil.noCacheJson, recordResponseTime, User.checkPermissions(['hideStats']), setCookie],
@@ -1802,61 +1806,61 @@ app.getpost( // connections csv endpoint (POST or GET) - uses fillQueryFromBody 
 // hunt apis ------------------------------------------------------------------
 app.get( // hunts endpoint
   ['/api/hunts'],
-  [ArkimeUtil.noCacheJson, disableInMultiES, recordResponseTime, User.checkPermissions(['packetSearch']), setCookie],
+  [ArkimeUtil.noCacheJson, recordResponseTime, User.checkPermissions(['packetSearch']), setCookie],
   HuntAPIs.getHunts
 );
 
 app.post( // create hunt endpoint
   ['/api/hunt'],
-  [ArkimeUtil.noCacheJson, disableInMultiES, logAction('hunt'), checkCookieToken, User.checkPermissions(['packetSearch'])],
+  [ArkimeUtil.noCacheJson, logAction('hunt'), checkCookieToken, User.checkPermissions(['packetSearch'])],
   HuntAPIs.createHunt
 );
 
 app.delete( // delete hunt endpoint
   ['/api/hunt/:id'],
-  [ArkimeUtil.noCacheJson, disableInMultiES, logAction('hunt/:id'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
+  [ArkimeUtil.noCacheJson, logAction('hunt/:id'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
   HuntAPIs.deleteHunt
 );
 
 app.put( // update hunt endpoint
   ['/api/hunt/:id'],
-  [ArkimeUtil.noCacheJson, disableInMultiES, logAction('hunt/:id'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
+  [ArkimeUtil.noCacheJson, logAction('hunt/:id'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
   HuntAPIs.updateHunt
 );
 
 app.put( // cancel hunt endpoint
   ['/api/hunt/:id/cancel'],
-  [ArkimeUtil.noCacheJson, disableInMultiES, logAction('hunt/:id/cancel'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
+  [ArkimeUtil.noCacheJson, logAction('hunt/:id/cancel'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
   HuntAPIs.cancelHunt
 );
 
 app.put( // pause hunt endpoint
   ['/api/hunt/:id/pause'],
-  [ArkimeUtil.noCacheJson, disableInMultiES, logAction('hunt/:id/pause'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
+  [ArkimeUtil.noCacheJson, logAction('hunt/:id/pause'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
   HuntAPIs.pauseHunt
 );
 
 app.put( // play hunt endpoint
   ['/api/hunt/:id/play'],
-  [ArkimeUtil.noCacheJson, disableInMultiES, logAction('hunt/:id/play'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
+  [ArkimeUtil.noCacheJson, logAction('hunt/:id/play'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
   HuntAPIs.playHunt
 );
 
 app.put( // remove from sessions hunt endpoint
   ['/api/hunt/:id/removefromsessions'],
-  [ArkimeUtil.noCacheJson, disableInMultiES, logAction('hunt/:id/removefromsessions'), checkCookieToken, User.checkPermissions(['packetSearch', 'removeEnabled']), checkHuntAccess],
+  [ArkimeUtil.noCacheJson, logAction('hunt/:id/removefromsessions'), checkCookieToken, User.checkPermissions(['packetSearch', 'removeEnabled']), checkHuntAccess],
   HuntAPIs.removeFromSessions
 );
 
 app.post( // add users to hunt endpoint
   ['/api/hunt/:id/users'],
-  [ArkimeUtil.noCacheJson, disableInMultiES, logAction('hunt/:id/users'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
+  [ArkimeUtil.noCacheJson, logAction('hunt/:id/users'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
   HuntAPIs.addUsers
 );
 
 app.delete( // remove users from hunt endpoint
   ['/api/hunt/:id/user/:user'],
-  [ArkimeUtil.noCacheJson, disableInMultiES, logAction('hunt/:id/user/:user'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
+  [ArkimeUtil.noCacheJson, logAction('hunt/:id/user/:user'), checkCookieToken, User.checkPermissions(['packetSearch']), checkHuntAccess],
   HuntAPIs.removeUsers
 );
 
@@ -1933,7 +1937,7 @@ app.get( // reverse dns endpoint
 // uploads apis ---------------------------------------------------------------
 app.post(
   ['/api/upload'],
-  [checkCookieToken, multer({ dest: '/tmp', limits: internals.uploadLimits }).single('file')],
+  [checkCookieToken, logAction(), multer({ dest: '/tmp', limits: internals.uploadLimits }).single('file')],
   MiscAPIs.upload
 );
 
@@ -1978,9 +1982,6 @@ app.use( // cyberchef UI endpoint
 // ============================================================================
 // VUE APP
 // ============================================================================
-const Vue = require('vue');
-const vueServerRenderer = require('vue-server-renderer');
-
 // using fallthrough: false because there is no 404 endpoint (client router
 // handles 404s) and sending index.html is confusing
 // expose vue bundles
@@ -1989,22 +1990,29 @@ app.use('/static', express.static(
   { maxAge: dayMs, fallthrough: false }
 ), ArkimeUtil.missingResource);
 
+// loads the manifest.json file from dist and inject it in the ejs template
+const parseManifest = () => {
+  if (process.env.NODE_ENV === 'development') return {};
+
+  const manifestPath = path.join(path.resolve(), 'vueapp/dist/.vite/manifest.json');
+  const manifestFile = fs.readFileSync(manifestPath, 'utf-8');
+
+  return JSON.parse(manifestFile);
+};
+const manifest = parseManifest();
+
 app.use(cspHeader, setCookie, (req, res) => {
   if (!req.user.webEnabled) {
     return res.status(403).send('Permission denied');
   }
 
-  if (req.path === '/users' && !req.user.hasRole('usersAdmin')) {
+  if (req.path.toLowerCase() === '/users' && !req.user.hasRole('usersAdmin')) {
     return res.status(403).send('Permission denied');
   }
 
-  if (req.path === '/settings' && req.user.isDemoMode()) {
+  if (req.path.toLowerCase() === '/settings' && req.user.isDemoMode()) {
     return res.status(403).send('Permission denied');
   }
-
-  const renderer = vueServerRenderer.createRenderer({
-    template: fs.readFileSync(path.join(__dirname, '/vueapp/dist/index.html'), 'utf-8')
-  });
 
   let theme = req.user?.settings?.theme || 'default-theme';
   if (theme.startsWith('custom1')) { theme = 'custom-theme'; }
@@ -2015,7 +2023,7 @@ app.use(cspHeader, setCookie, (req, res) => {
     .replace(/_userName_/g, req.user ? req.user.userName : '-');
 
   const footerConfig = Config.get('footerTemplate', '_version_ | <a href="https://arkime.com">arkime.com</a> | _responseTime_')
-    .replace(/_version_/g, `Arkime v${version.version}`).replace(/_responseTime_/g, '{{ responseTime | commaString }}ms');
+    .replace(/_version_/g, `Arkime v${version.version}`).replace(/_responseTime_/g, '{{ commaString(responseTime) }}ms');
 
   const limit = req.user.hasRole('arkimeAdmin') ? Config.get('huntAdminLimit', 10000000) : Config.get('huntLimit', 1000000);
 
@@ -2038,20 +2046,17 @@ app.use(cspHeader, setCookie, (req, res) => {
     businessDays: Config.get('businessDays', '1,2,3,4,5'),
     turnOffGraphDays: Config.get('turnOffGraphDays', 30),
     disableUserPasswordUI: Config.get('disableUserPasswordUI', true),
-    logoutUrl: Auth.logoutUrl,
+    logoutUrl: Auth.logoutUrl(req),
+    logoutUrlMethod: Auth.logoutUrlMethod,
     defaultTimeRange: Config.get('defaultTimeRange', '1'),
-    spiViewCategoryOrder: Config.get('spiViewCategoryOrder')
+    spiViewCategoryOrder: Config.get('spiViewCategoryOrder'),
+    environment: process.env.NODE_ENV,
+    manifest
   };
 
-  // Create a fresh Vue app instance
-  const vueApp = new Vue({
-    template: '<div id="app"></div>'
-  });
-
-  // Render the Vue instance to HTML
-  renderer.renderToString(vueApp, appContext, (err, html) => {
+  res.render('index.html.ejs', appContext, (err, html) => {
     if (err) {
-      console.log(err);
+      console.log('ERROR - fetching vue index page:', err);
       if (err.code === 404) {
         res.status(404).end('Page not found');
       } else {
@@ -2106,7 +2111,7 @@ async function main () {
 
   const pcapWriteMethod = Config.get('pcapWriteMethod');
   const writer = internals.writers.get(pcapWriteMethod);
-  if (!writer || writer.localNode === true) {
+  if (!internals.multiES && (!writer || writer.localNode === true)) {
     expireCheckAll();
     setInterval(expireCheckAll, 60 * 1000);
   }
@@ -2156,7 +2161,7 @@ process.on('unhandledRejection', (reason, p) => {
 });
 
 async function premain () {
-  await Config.initialize();
+  await Config.initialize({ initAuth: true });
 
   Db.initialize({
     host: internals.elasticBase,
@@ -2171,7 +2176,7 @@ async function premain () {
     esClientCert: Config.get('esClientCert', null),
     esClientKeyPass: Config.get('esClientKeyPass', null),
     multiES: internals.multiES,
-    insecure: ArkimeConfig.insecure,
+    insecure: ArkimeConfig.isInsecure([internals.elasticBase, Config.getArray('usersElasticsearch')]),
     caTrustFile: Config.get('caTrustFile', null),
     requestTimeout: Config.get('elasticsearchTimeout', 300),
     esProfile: Config.esProfile,

@@ -26,11 +26,18 @@
                "packets" : 0,
                "port" : 3478
             },
+            "dot1q" : {
+               "id" : [
+                  300
+               ],
+               "idCnt" : 1
+            },
             "dstOui" : [
                "Juniper Networks"
             ],
             "dstOuiCnt" : 1,
             "dstRIR" : "TEST",
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1483104480102,
             "ipProtocol" : 17,
@@ -88,6 +95,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "0001001845589a04",
+            "srcTTL" : [
+               127
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "dstip",
                "srcip"
@@ -137,10 +148,17 @@
                "packets" : 0,
                "port" : 3478
             },
+            "dot1q" : {
+               "id" : [
+                  300
+               ],
+               "idCnt" : 1
+            },
             "dstOui" : [
                "Juniper Networks"
             ],
             "dstOuiCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1483109179834,
             "ipProtocol" : 17,
@@ -195,6 +213,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "000300712112a442",
+            "srcTTL" : [
+               63
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 133
          },
          "header" : {
@@ -220,6 +242,13 @@
                "packets" : 1,
                "port" : 3478
             },
+            "dot1q" : {
+               "id" : [
+                  "100",
+                  "300"
+               ],
+               "idCnt" : 2
+            },
             "dstDscp" : [
                2
             ],
@@ -229,6 +258,11 @@
                "Palo Alto Networks"
             ],
             "dstOuiCnt" : 2,
+            "dstTTL" : [
+               55
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1483325250913,
             "ipProtocol" : 6,
@@ -240,8 +274,8 @@
                "packets" : 3,
                "vlan" : {
                   "id" : [
-                     100,
-                     300
+                     300,
+                     100
                   ],
                   "id-cnt" : 2
                }
@@ -283,6 +317,10 @@
             ],
             "srcOuiCnt" : 2,
             "srcPayload8" : "5253502f312e3020",
+            "srcTTL" : [
+               127
+            ],
+            "srcTTLCnt" : 1,
             "tcpflags" : {
                "ack" : 0,
                "dstZero" : 0,
@@ -293,6 +331,10 @@
                "syn" : 1,
                "syn-ack" : 1,
                "urg" : 0
+            },
+            "tcpseq" : {
+               "dst" : 0,
+               "src" : 363317647
             },
             "totDataBytes" : 86
          },
@@ -322,6 +364,7 @@
                "Juniper Networks"
             ],
             "dstOuiCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1483326849006,
             "ipProtocol" : 17,
@@ -363,6 +406,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "0001000800000000",
+            "srcTTL" : [
+               121
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 28
          },
          "header" : {
@@ -391,6 +438,7 @@
                "ICANN, IANA Department"
             ],
             "dstOuiCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1483331734283,
             "ipProtocol" : 17,
@@ -432,6 +480,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "0001000802389232",
+            "srcTTL" : [
+               125
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 28
          },
          "header" : {
@@ -460,6 +512,7 @@
                "ICANN, IANA Department"
             ],
             "dstOuiCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1483331743573,
             "ipProtocol" : 17,
@@ -501,6 +554,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "5253502f322e3020",
+            "srcTTL" : [
+               126
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 33
          },
          "header" : {

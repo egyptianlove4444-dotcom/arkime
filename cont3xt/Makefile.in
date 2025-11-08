@@ -1,8 +1,6 @@
-install_sh = @install_sh@
-mkdir_p = @mkdir_p@
+MKDIR_P = mkdir -p
 INSTALL = @INSTALL@
-CONT3XTDIR = @prefix@/cont3xt
-BINDIR = @prefix@/bin
+CONT3XTDIR = $(DESTDIR)@prefix@/cont3xt
 CP = /bin/cp
 INSTALL_BUNDLE ?= "bundle:min"
 
@@ -10,18 +8,18 @@ all:
 	echo "CONT3XT!"
 
 check:
-	npm ci --production
+	npm ci
 	npm run bundle
 
 install:
-	@mkdir -p "$(CONT3XTDIR)" "$(CONT3XTDIR)/vueapp" "$(CONT3XTDIR)/integrations"
+	$(MKDIR_P) "$(CONT3XTDIR)" "$(CONT3XTDIR)/vueapp" "$(CONT3XTDIR)/integrations"
 	$(INSTALL) *.js package.json package-lock.json $(CONT3XTDIR)
 	npm ci
 	npm run $(INSTALL_BUNDLE)
 	$(CP) -pr favicon.ico $(CONT3XTDIR)
-	$(CP) -pr integrations "$(CONT3XTDIR)/"
+	$(CP) -pr views integrations "$(CONT3XTDIR)/"
 	$(CP) -pr vueapp/dist "$(CONT3XTDIR)/vueapp"
-	(cd $(CONT3XTDIR) ; npm ci --production)
+	(cd $(CONT3XTDIR) ; npm ci --omit=dev)
 
 distclean realclean clean:
 	rm -rf node_modules

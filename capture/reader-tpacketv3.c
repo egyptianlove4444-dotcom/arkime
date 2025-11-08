@@ -13,11 +13,12 @@
  *
  */
 
+#define _FILE_OFFSET_BITS 64
 #include "arkime.h"
 extern ArkimeConfig_t        config;
 
 #ifndef __linux
-void reader_tpacketv3_init(char *UNUSED(name))
+void reader_tpacketv3_init(const char *UNUSED(name))
 {
     CONFIGEXIT("tpacketv3 not supported");
 }
@@ -34,14 +35,12 @@ void reader_tpacketv3_init(char *UNUSED(name))
 #include <poll.h>
 
 #ifndef TPACKET3_HDRLEN
-void reader_tpacketv3_init(char *UNUSED(name))
+void reader_tpacketv3_init(const char *UNUSED(name))
 {
     CONFIGEXIT("tpacketv3 not supported");
 }
 
 #else
-
-#define MAX_TPACKETV3_THREADS 12
 
 typedef struct {
     int                  fd;
@@ -49,9 +48,10 @@ typedef struct {
     uint8_t             *map;
     struct iovec        *rd;
     uint8_t              interfacePos;
+    uint8_t              thread;
 } ArkimeTPacketV3_t;
 
-LOCAL ArkimeTPacketV3_t infos[MAX_INTERFACES][MAX_TPACKETV3_THREADS];
+LOCAL ArkimeTPacketV3_t infos[MAX_INTERFACES][MAX_THREADS_PER_INTERFACE];
 
 LOCAL int numThreads;
 
@@ -60,6 +60,8 @@ LOCAL struct bpf_program     bpf;
 
 LOCAL ArkimeReaderStats_t gStats;
 LOCAL ARKIME_LOCK_DEFINE(gStats);
+
+LOCAL gboolean tpacketv3OldVlan;
 
 /******************************************************************************/
 int reader_tpacketv3_stats(ArkimeReaderStats_t *stats)
@@ -94,6 +96,12 @@ LOCAL void *reader_tpacketv3_thread(gpointer infov)
 
     ArkimePacketBatch_t batch;
     arkime_packet_batch_init(&batch);
+
+    uint16_t vlanTag = htons(0x8100);
+    uint16_t vlan;
+
+    int initFunc = arkime_get_named_func("arkime_reader_thread_init");
+    arkime_call_named_func(initFunc, info->interfacePos * MAX_THREADS_PER_INTERFACE + info->thread, NULL);
 
     while (!config.quitting) {
         struct tpacket_block_desc *tbd = info->rd[pos].iov_base;
@@ -139,7 +147,21 @@ LOCAL void *reader_tpacketv3_thread(gpointer infov)
             packet->readerPos     = info->interfacePos;
 
             if ((th->tp_status & TP_STATUS_VLAN_VALID) && th->hv1.tp_vlan_tci) {
-                packet->vlan = th->hv1.tp_vlan_tci & 0xfff;
+                if (tpacketv3OldVlan) {
+                    packet->vlan = th->hv1.tp_vlan_tci & 0xfff;
+                } else {
+                    // AFPacket removes the first VLAN so add it back in. Thanks to Suricata for the idea.
+                    packet->pktlen += 4;
+                    packet->pkt -= 4;
+
+                    // Move MACs back to make room
+                    memmove(packet->pkt, packet->pkt + 4, 12);
+
+                    // Add vlan that was removed
+                    memcpy(packet->pkt + 12, &vlanTag, 2);
+                    vlan = htons(th->hv1.tp_vlan_tci & 0xfff);
+                    memcpy(packet->pkt + 14, &vlan, 2);
+                }
             }
 
             arkime_packet_batch(&batch, packet);
@@ -151,6 +173,9 @@ LOCAL void *reader_tpacketv3_thread(gpointer infov)
         tbd->hdr.bh1.block_status = TP_STATUS_KERNEL;
         pos = (pos + 1) % info->req.tp_block_nr;
     }
+
+    int exitFunc = arkime_get_named_func("arkime_reader_thread_exit");
+    arkime_call_named_func(exitFunc, info->interfacePos * MAX_THREADS_PER_INTERFACE + info->thread, NULL);
     return NULL;
 }
 /******************************************************************************/
@@ -176,8 +201,10 @@ void reader_tpacketv3_exit()
 /******************************************************************************/
 void reader_tpacketv3_init(char *UNUSED(name))
 {
+    arkime_config_check("tpacketv3", "tpacketv3BlockSize", "tpacketv3NumThreads", "tpacketv3ClusterId", NULL);
+
     int blocksize = arkime_config_int(NULL, "tpacketv3BlockSize", 1 << 21, 1 << 16, 1U << 31);
-    numThreads = arkime_config_int(NULL, "tpacketv3NumThreads", 2, 1, MAX_TPACKETV3_THREADS);
+    numThreads = arkime_config_int(NULL, "tpacketv3NumThreads", 2, 1, MAX_THREADS_PER_INTERFACE);
 
     if (blocksize % getpagesize() != 0) {
         CONFIGEXIT("tpacketv3BlockSize=%d not divisible by pagesize %d", blocksize, getpagesize());
@@ -199,7 +226,10 @@ void reader_tpacketv3_init(char *UNUSED(name))
 
     int fanout_group_id = arkime_config_int(NULL, "tpacketv3ClusterId", 8005, 0x0001, 0xffff);
 
+    tpacketv3OldVlan = arkime_config_boolean(NULL, "tpacketv3OldVlan", FALSE);
+
     int version = TPACKET_V3;
+    int reserve = 4;
     int i;
     for (i = 0; i < MAX_INTERFACES && config.interface[i]; i++) {
         int ifindex = if_nametoindex(config.interface[i]);
@@ -207,9 +237,13 @@ void reader_tpacketv3_init(char *UNUSED(name))
         for (int t = 0; t < numThreads; t++) {
             infos[i][t].fd = socket(AF_PACKET, SOCK_RAW, 0);
             infos[i][t].interfacePos = i;
+            infos[i][t].thread = t;
 
             if (setsockopt(infos[i][t].fd, SOL_PACKET, PACKET_VERSION, &version, sizeof(version)) < 0)
                 CONFIGEXIT("Error setting TPACKET_V3, might need a newer kernel: %s", strerror(errno));
+
+            if (!tpacketv3OldVlan && setsockopt(infos[i][t].fd, SOL_PACKET, PACKET_RESERVE, &reserve, sizeof(reserve)) < 0)
+                CONFIGEXIT("Error setting RESERVE, might need a newer kernel: %s", strerror(errno));
 
             memset(&infos[i][t].req, 0, sizeof(infos[i][t].req));
             infos[i][t].req.tp_block_size = blocksize;
@@ -236,10 +270,10 @@ void reader_tpacketv3_init(char *UNUSED(name))
                     CONFIGEXIT("Error setting SO_ATTACH_FILTER: %s", strerror(errno));
             }
 
-            infos[i][t].map = mmap64(NULL, infos[i][t].req.tp_block_size * infos[i][t].req.tp_block_nr,
-                                     PROT_READ | PROT_WRITE, MAP_SHARED | MAP_LOCKED, infos[i][t].fd, 0);
+            infos[i][t].map = mmap(NULL, (size_t)infos[i][t].req.tp_block_size * infos[i][t].req.tp_block_nr,
+                                   PROT_READ | PROT_WRITE, MAP_SHARED | MAP_LOCKED, infos[i][t].fd, 0);
             if (unlikely(infos[i][t].map == MAP_FAILED)) {
-                CONFIGEXIT("MMap64 failure in reader_tpacketv3_init, %d: %s. Tried to allocate %d bytes (tpacketv3BlockSize: %d * 64) which was probbaly too large for this host, you probably need to reduce one of the values.", errno, strerror(errno), infos[i][t].req.tp_block_size * infos[i][t].req.tp_block_nr, blocksize);
+                CONFIGEXIT("mmap failure in reader_tpacketv3_init, %d: %s. Tried to allocate %" PRId64 " bytes (tpacketv3BlockSize: %d * 64) which was probbaly too large for this host, you probably need to reduce one of the values.", errno, strerror(errno), (size_t)infos[i][t].req.tp_block_size * infos[i][t].req.tp_block_nr, blocksize);
             }
             infos[i][t].rd = malloc(infos[i][t].req.tp_block_nr * sizeof(struct iovec));
 

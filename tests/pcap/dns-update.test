@@ -41,12 +41,23 @@
                }
             ],
             "dnsCnt" : 1,
+            "dot1q" : {
+               "id" : [
+                  100
+               ],
+               "idCnt" : 1
+            },
             "dstOui" : [
                "Palo Alto Networks"
             ],
             "dstOuiCnt" : 1,
             "dstPayload8" : "6919a80400010000",
             "dstRIR" : "TEST",
+            "dstTTL" : [
+               118
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1467464484984,
             "ipProtocol" : 17,
@@ -107,6 +118,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "6919280000010001",
+            "srcTTL" : [
+               126
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "dstip",
                "srcip"

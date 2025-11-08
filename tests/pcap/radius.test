@@ -26,12 +26,23 @@
                "packets" : 1,
                "port" : 1813
             },
+            "dot1q" : {
+               "id" : [
+                  50
+               ],
+               "idCnt" : 1
+            },
             "dstOui" : [
                "Juniper Networks"
             ],
             "dstOuiCnt" : 1,
             "dstPayload8" : "05e3001400000000",
             "dstRIR" : "TEST",
+            "dstTTL" : [
+               56
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1463339353458,
             "ipProtocol" : 17,
@@ -113,6 +124,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "04e3015700000000",
+            "srcTTL" : [
+               61
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "dstip",
                "srcip"

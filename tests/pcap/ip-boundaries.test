@@ -20,6 +20,7 @@
                "Juniper Networks"
             ],
             "dstOuiCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1387253713030,
             "ipProtocol" : 17,
@@ -61,6 +62,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "64313a6164323a69",
+            "srcTTL" : [
+               61
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 103
          },
          "header" : {

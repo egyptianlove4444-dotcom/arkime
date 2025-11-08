@@ -12,7 +12,6 @@
 extern ArkimeConfig_t        config;
 
 lua_State *Ls[ARKIME_MAX_PACKET_THREADS];
-ArkimeSession_t moluaFakeSessions[ARKIME_MAX_PACKET_THREADS];
 
 int molua_pluginIndex;
 
@@ -59,7 +58,7 @@ LOCAL int M_expression_to_fieldId(lua_State *L)
     return 1;
 }
 /******************************************************************************/
-void luaopen_arkime(lua_State *L)
+LOCAL void luaopen_arkime(lua_State *L)
 {
     static const struct luaL_Reg methods[] = {
         { NULL, NULL }
@@ -78,49 +77,54 @@ void luaopen_arkime(lua_State *L)
     lua_setglobal(L, "Arkime");
 }
 /******************************************************************************/
-void molua_session_save(ArkimeSession_t *session, int final)
+LOCAL int molua_load_file(const char *name)
 {
-    if (final && session->pluginData[molua_pluginIndex]) {
-        MoluaPlugin_t *mp = session->pluginData[molua_pluginIndex];
-
-        if (mp->table) {
-            luaL_unref(Ls[session->thread], LUA_REGISTRYINDEX, mp->table);
+    int thread;
+    for (thread = 0; thread < config.packetThreads; thread++) {
+        lua_State *L = Ls[thread];
+        if (luaL_loadfile(L, name)) {
+            LOGEXIT("Error loading %s: %s", name, lua_tostring(L, -1));
         }
-        ARKIME_TYPE_FREE(MoluaPlugin_t, mp);
-        session->pluginData[molua_pluginIndex] = 0;
+
+        if (lua_pcall(L, 0, 0, 0)) {
+            LOGEXIT("Error initing %s: %s", name, lua_tostring(L, -1));
+        }
     }
+    return 0;
+}
+/******************************************************************************/
+LOCAL int molua_parser_load(const char *path)
+{
+    return molua_load_file(path);
+}
+/******************************************************************************/
+LOCAL int molua_plugin_load(const char *path)
+{
+    return molua_load_file(path);
 }
 /******************************************************************************/
 void arkime_plugin_init()
 {
-    int thread;
-    char **names = arkime_config_str_list(NULL, "luaFiles", "moloch.lua");
-
     molua_pluginIndex = arkime_plugins_register("lua", TRUE);
 
-    arkime_plugins_set_cb("lua", NULL, NULL, NULL, NULL, molua_session_save, NULL, NULL, NULL);
+    arkime_parsers_register_load_extension(".lua", molua_parser_load);
+    arkime_plugins_register_load_extension(".lua", molua_plugin_load);
 
-
+    int thread;
     for (thread = 0; thread < config.packetThreads; thread++) {
         lua_State *L = Ls[thread] = luaL_newstate();
         luaL_openlibs(L);
-        moluaFakeSessions[thread].thread = thread;
+        luaopen_arkime(L);
+        luaopen_arkimehttpservice(L);
+        luaopen_arkimesession(L);
+        luaopen_arkimedata(L);
+    }
 
+    char **names = arkime_config_str_list(NULL, "luaFiles", NULL);
+    if (names && *names[0]) {
         int i;
         for (i = 0; names[i]; i++) {
-
-            luaopen_arkime(L);
-            luaopen_arkimehttpservice(L);
-            luaopen_arkimesession(L);
-            luaopen_arkimedata(L);
-
-            if (luaL_loadfile(L, names[i])) {
-                CONFIGEXIT("Error loading %s: %s", names[i], lua_tostring(L, -1));
-            }
-
-            if (lua_pcall(L, 0, 0, 0)) {
-                CONFIGEXIT("Error initing %s: %s", names[i], lua_tostring(L, -1));
-            }
+            molua_load_file(names[i]);
         }
     }
 }

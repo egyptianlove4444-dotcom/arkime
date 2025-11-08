@@ -27,9 +27,10 @@ const arkimeparser = require('./arkimeparser.js');
 const internals = require('./internals');
 const ViewerUtils = require('./viewerUtils');
 const ipaddr = require('ipaddr.js');
-const LRU = require('lru-cache');
+const { LRUCache } = require('lru-cache');
+const sanitizeHtml = require('sanitize-html');
 
-const headerlru = new LRU({ max: 100 });
+const headerlru = new LRUCache({ max: 100 });
 
 class SessionAPIs {
   // --------------------------------------------------------------------------
@@ -109,7 +110,7 @@ class SessionAPIs {
       info.order.split(',').forEach((item) => {
         const parts = item.split(':');
         const field = parts[0];
-        if (field === '__proto__') { return; }
+        if (ArkimeUtil.isPP(field)) { return; }
 
         const obj = {};
         if (field === 'firstPacket') {
@@ -178,7 +179,7 @@ class SessionAPIs {
    * @returns {function} - the callback to call once the session query is built or an error occurs
    */
   static async #addViewToQuery (req, query, continueBuildQueryCb, finalCb, queryOverride = null) {
-    // queryOverride can supercede req.query if specified
+    // queryOverride can supersede req.query if specified
     const reqQuery = queryOverride || req.query;
 
     try {
@@ -226,11 +227,11 @@ class SessionAPIs {
         query.query.bool.filter.push(viewExpression);
         return continueBuildQueryCb(req, query, undefined, finalCb, queryOverride);
       } catch (err) {
-        console.log('ERROR - User expression (%s) doesn\'t compile -', ArkimeUtil.sanitizeStr(reqQuery.view), util.inspect(err, false, 50));
+        console.log(`ERROR - View expression (%s) doesn't compile -`, ArkimeUtil.sanitizeStr(reqQuery.view), util.inspect(err, false, 50));
         return continueBuildQueryCb(req, query, err, finalCb, queryOverride);
       }
     } catch (err) {
-      console.log('ERROR - Can\'t find view (%s) -', ArkimeUtil.sanitizeStr(reqQuery.view), util.inspect(err, false, 50));
+      console.log(`ERROR - Can't find view (%s) -`, ArkimeUtil.sanitizeStr(reqQuery.view), util.inspect(err, false, 50));
       return continueBuildQueryCb(req, query, err, finalCb, queryOverride);
     }
   }
@@ -402,7 +403,7 @@ class SessionAPIs {
           return cb(err);
         }
         if (items === undefined || items.length === 0) {
-          return cb('No match');
+          return cb(`No match for ${req.params.id}`);
         }
         cb(err, items[0].data);
       };
@@ -754,7 +755,7 @@ class SessionAPIs {
     }
 
     const block = await getBlock(info, 0);
-    obj = { info, header: block };
+    obj = { info, header: block.slice(0, 24) };
     headerlru.set(key, obj);
     return obj;
   }
@@ -798,7 +799,7 @@ class SessionAPIs {
       try {
         h = await SessionAPIs.#getHeader(fields.node, -pos, getBlock);
       } catch (e) {
-        console.log('Failure fetching header', e.response);
+        console.log('Failure fetching header', e.response ?? e);
         return endCb('Only have SPI data, PCAP file no longer available for ' + e.response?.config?.url);
       }
       pcap = Pcap.make(h.info.name, h.header);
@@ -1102,33 +1103,33 @@ class SessionAPIs {
       }
     }
 
-    function processFile (pcap, pos, i, nextCb) {
+    async function processFile (pcap, pos, i) {
       pcap.ref();
-      pcap.readPacket(pos, (packet) => {
-        pcap.unref();
-        if (packet) {
-          if (packet.length > 16) {
-            try {
-              const obj = {};
-              pcap.decode(packet, obj);
-              pcap.scrubPacket(obj, pos, SessionAPIs.#scrubbingBuffers[0], whatToRemove === 'all');
-              pcap.scrubPacket(obj, pos, SessionAPIs.#scrubbingBuffers[1], whatToRemove === 'all');
-              pcap.scrubPacket(obj, pos, SessionAPIs.#scrubbingBuffers[2], whatToRemove === 'all');
-            } catch (e) {
-              console.log(`ERROR - Couldn't scrub packet at ${pos} -`, util.inspect(e, false, 50));
-            }
-            return nextCb(null);
-          } else {
-            console.log(`ERROR - Couldn't scrub packet at ${pos}. Packet length <= 16.`);
-            return nextCb(null);
+      try {
+        const packet = await pcap.readPacketPromise(pos);
+        if (packet.length > 16) {
+          try {
+            const obj = {};
+            pcap.decode(packet, obj);
+            pcap.scrubPacket(obj, pos, SessionAPIs.#scrubbingBuffers[0], whatToRemove === 'all');
+            pcap.scrubPacket(obj, pos, SessionAPIs.#scrubbingBuffers[1], whatToRemove === 'all');
+            pcap.scrubPacket(obj, pos, SessionAPIs.#scrubbingBuffers[2], whatToRemove === 'all');
+          } catch (e) {
+            console.log(`ERROR - Couldn't scrub packet at ${pos} -`, util.inspect(e, false, 50));
           }
+        } else {
+          console.log(`ERROR - Couldn't scrub packet at ${pos}. Packet length <= 16.`);
         }
-      });
+      } catch (err) {
+        // Ignore error
+      }
+      pcap.unref();
     }
 
     Db.getSession(sid, { _source: false, fields: ['node', 'ipProtocol', 'packetPos'] }, async (err, session) => {
       let fileNum;
       let itemPos = 0;
+      let noScrubs = false; // best name ever
       const fields = session.fields;
 
       if (whatToRemove === 'spi') { // just removing es data for session
@@ -1137,42 +1138,55 @@ class SessionAPIs {
           return endCb(null, fields);
         } catch (err) { return endCb(err, fields); }
       } else { // scrub the pcap
-        async.eachLimit(fields.packetPos, 10, (pos, nextCb) => {
+        async.eachLimit(fields.packetPos, 10, async (pos) => {
           if (pos < 0) {
             fileNum = pos * -1;
-            return nextCb(null);
+            return;
           }
 
           // Get the pcap file for this node a filenum, if it isn't opened then do the filename lookup and open it
           const opcap = Pcap.get(`write:${fields.node}:${fileNum}`);
           if (opcap.isCorrupt()) {
-            return nextCb('Corrupt');
-          } else if (!opcap.isOpen()) {
-            Db.fileIdToFile(fields.node, fileNum, (file) => {
-              if (!file) {
-                console.log(`WARNING - Only have SPI data, PCAP file no longer available.  Couldn't look up in file table ${fields.node}-${fileNum}`);
-                return nextCb(`Only have SPI data, PCAP file no longer available for ${fields.node}-${fileNum}`);
-              }
-
-              const ipcap = Pcap.get(`write:${fields.node}:${file.num}`);
-
-              try {
-                ipcap.openReadWrite(file);
-              } catch (err) {
-                console.log("ERROR - Couldn't open file during pcapScrub:", util.inspect(err, false, 50));
-                return nextCb(`Couldn't open file for scrubbing pcap: ${err}`);
-              }
-              processFile(ipcap, pos, itemPos++, nextCb);
-            });
-          } else {
-            processFile(opcap, pos, itemPos++, nextCb);
+            throw new Error('Corrupt');
           }
+
+          // Already open, just process
+          if (opcap.isOpen()) {
+            await processFile(opcap, pos, itemPos++);
+            return;
+          }
+
+          // Do the filename lookup and open it
+          let file;
+          try {
+            file = await Db.fileIdToFile(fields.node, fileNum);
+          } catch (err) {
+            console.log(`WARNING - Only have SPI data, PCAP file no longer available.  Couldn't look up in file table ${fields.node}-${fileNum}`);
+            throw new Error(`Only have SPI data, PCAP file no longer available for ${fields.node}-${fileNum}`);
+          }
+
+          if (whatToRemove === 'pcap' && (file.uncompressedBits !== undefined || file.encoding !== undefined)) {
+            noScrubs = true;
+            return;
+          }
+
+          const ipcap = Pcap.get(`write:${fields.node}:${file.num}`);
+
+          try {
+            ipcap.openReadWrite(file);
+          } catch (err) {
+            console.log("ERROR - Couldn't open file during pcapScrub:", util.inspect(err, false, 50));
+            throw new Error(`Couldn't open file for scrubbing pcap: ${err}`);
+          }
+          await processFile(ipcap, pos, itemPos++);
         }, async (pcapErr, results) => {
           if (whatToRemove === 'all') { // also remove the session data
             try {
               await Db.deleteDocument(session._index, 'session', session._id);
               return endCb(null, fields);
-            } catch (err) { return endCb(pcapErr, fields); }
+            } catch (err) {
+              return endCb(pcapErr, fields);
+            }
           } else { // just set who/when scrubbed the pcap
             // Do the ES update
             const doc = {
@@ -1181,6 +1195,11 @@ class SessionAPIs {
                 scrubat: new Date().getTime()
               }
             };
+            if (noScrubs) {
+              doc.doc.packetLen = [];
+              doc.doc.packetPos = [];
+              doc.doc.fileId = [];
+            }
             Db.updateSession(session._index, session._id, doc, (err, data) => {
               return endCb(pcapErr, fields);
             });
@@ -1208,6 +1227,7 @@ class SessionAPIs {
         });
       });
     }, (err) => {
+      Db.refresh('sessions*');
       let text;
       if (whatToRemove === 'all') {
         text = `Deletion PCAP and SPI of ${list.length} sessions complete. Give OpenSearch/Elasticsearch 60 seconds to complete SPI deletion.`;
@@ -1262,12 +1282,12 @@ class SessionAPIs {
           psid ??= SessionAPIs.#processSessionIdBlock;
           extra = scheme.getBlock;
         }
-      }
-
-      const pcapWriteMethod = Config.getFull(fields.node, 'pcapWriteMethod');
-      const writer = internals.writers.get(pcapWriteMethod);
-      if (writer && writer.processSessionId) {
-        psid ??= writer.processSessionId;
+      } else {
+        const pcapWriteMethod = Config.getFull(fields.node, 'pcapWriteMethod');
+        const writer = internals.writers.get(pcapWriteMethod);
+        if (writer && writer.processSessionId) {
+          psid ??= writer.processSessionId;
+        }
       }
 
       psid ??= SessionAPIs.#processSessionIdDisk;
@@ -1357,7 +1377,7 @@ class SessionAPIs {
       return buildCb(`User time limit (${req.user.timeLimit} hours) exceeded`, {});
     }
 
-    const limit = Math.min(2000000, +reqQuery.length || 100);
+    const limit = Math.min(+Config.get('maxSessionsQueried', 2000000), +reqQuery.length || 100);
 
     const query = {
       from: reqQuery.start || 0,
@@ -1419,8 +1439,9 @@ class SessionAPIs {
       }
     }
 
-    if (reqQuery.facets === 'true' || parseInt(reqQuery.facets) === 1) {
+    if (reqQuery.facets === 'true' || parseInt(reqQuery.facets) === 1 || reqQuery.map === 'true' || reqQuery.map === true) {
       query.aggregations = {};
+
       // only add map aggregations if requested
       if (reqQuery.map === 'true' || reqQuery.map) {
         query.aggregations = {
@@ -1430,43 +1451,46 @@ class SessionAPIs {
         };
       }
 
-      query.aggregations.dbHisto = { aggregations: {} };
+      // add the dbHisto aggregation for timeline data if requested
+      if (reqQuery.facets === 'true' || parseInt(reqQuery.facets) === 1) {
+        query.aggregations.dbHisto = { aggregations: {} };
 
-      const filters = req.user.settings.timelineDataFilters || internals.settingDefaults.timelineDataFilters;
-      for (let i = 0; i < filters.length; i++) {
-        const filter = filters[i];
+        const filters = req.user.settings.timelineDataFilters || internals.settingDefaults.timelineDataFilters;
+        for (let i = 0; i < filters.length; i++) {
+          const filter = filters[i];
 
-        // Will also grab src/dst of these options instead to show on the timeline
-        switch (filter) {
-        case 'network.packets':
-        case 'totPackets':
-          query.aggregations.dbHisto.aggregations['source.packets'] = { sum: { field: 'source.packets' } };
-          query.aggregations.dbHisto.aggregations['destination.packets'] = { sum: { field: 'destination.packets' } };
+          // Will also grab src/dst of these options instead to show on the timeline
+          switch (filter) {
+          case 'network.packets':
+          case 'totPackets':
+            query.aggregations.dbHisto.aggregations['source.packets'] = { sum: { field: 'source.packets' } };
+            query.aggregations.dbHisto.aggregations['destination.packets'] = { sum: { field: 'destination.packets' } };
+            break;
+          case 'network.bytes':
+          case 'totBytes':
+            query.aggregations.dbHisto.aggregations['source.bytes'] = { sum: { field: 'source.bytes' } };
+            query.aggregations.dbHisto.aggregations['destination.bytes'] = { sum: { field: 'destination.bytes' } };
+            break;
+          case 'totDataBytes':
+            query.aggregations.dbHisto.aggregations['client.bytes'] = { sum: { field: 'client.bytes' } };
+            query.aggregations.dbHisto.aggregations['server.bytes'] = { sum: { field: 'server.bytes' } };
+            break;
+          default:
+            query.aggregations.dbHisto.aggregations[filter] = { sum: { field: filter } };
+          }
+        }
+
+        switch (reqQuery.bounding) {
+        case 'first':
+          query.aggregations.dbHisto.histogram = { field: 'firstPacket', interval: interval * 1000, min_doc_count: 1 };
           break;
-        case 'network.bytes':
-        case 'totBytes':
-          query.aggregations.dbHisto.aggregations['source.bytes'] = { sum: { field: 'source.bytes' } };
-          query.aggregations.dbHisto.aggregations['destination.bytes'] = { sum: { field: 'destination.bytes' } };
-          break;
-        case 'totDataBytes':
-          query.aggregations.dbHisto.aggregations['client.bytes'] = { sum: { field: 'client.bytes' } };
-          query.aggregations.dbHisto.aggregations['server.bytes'] = { sum: { field: 'server.bytes' } };
+        case 'database':
+          query.aggregations.dbHisto.histogram = { field: '@timestamp', interval: interval * 1000, min_doc_count: 1 };
           break;
         default:
-          query.aggregations.dbHisto.aggregations[filter] = { sum: { field: filter } };
+          query.aggregations.dbHisto.histogram = { field: 'lastPacket', interval: interval * 1000, min_doc_count: 1 };
+          break;
         }
-      }
-
-      switch (reqQuery.bounding) {
-      case 'first':
-        query.aggregations.dbHisto.histogram = { field: 'firstPacket', interval: interval * 1000, min_doc_count: 1 };
-        break;
-      case 'database':
-        query.aggregations.dbHisto.histogram = { field: '@timestamp', interval: interval * 1000, min_doc_count: 1 };
-        break;
-      default:
-        query.aggregations.dbHisto.histogram = { field: 'lastPacket', interval: interval * 1000, min_doc_count: 1 };
-        break;
       }
     }
 
@@ -1545,6 +1569,11 @@ class SessionAPIs {
     }, (err) => {
       if (processSegments) {
         SessionAPIs.buildSessionQuery(req, (err, query, indices) => {
+          if (err) {
+            console.log('ERROR - sessionsListFromIds', util.inspect(err, false, 50));
+            return cb(err);
+          }
+
           query.fields = fields;
           query._source = false;
           SessionAPIs.#sessionsListAddSegments(req, indices, query, list, (err, addSegmentsList) => {
@@ -1836,6 +1865,11 @@ class SessionAPIs {
         console.log(`/api/sessions ${indices} query`, JSON.stringify(query, null, 1));
       }
 
+      let hideTags = req.user.settings.hideTags?.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
+      if (hideTags?.length === 0) {
+        hideTags = undefined;
+      }
+
       Promise.all([
         Db.searchSessions(indices, query, options),
         Db.numberOfDocuments(Db.getSessionIndices(), options.cluster ? { cluster: options.cluster } : {})
@@ -1850,10 +1884,15 @@ class SessionAPIs {
         graph = ViewerUtils.graphMerge(req, query, sessions.aggregations);
 
         const results = { total: sessions.hits.total, results: [] };
-        async.each(sessions.hits.hits, (hit, hitCb) => {
+        async.eachSeries(sessions.hits.hits, (hit, hitCb) => {
           const fields = hit.fields;
           if (fields === undefined) {
             return hitCb(null);
+          }
+
+          if (hideTags && fields.tags) {
+            // remove all entries from hideTags
+            fields.tags = fields.tags.filter((tag) => !hideTags.includes(tag));
           }
 
           fields.id = Db.session2Sid(hit);
@@ -1939,6 +1978,10 @@ class SessionAPIs {
     if (req.query.ids) {
       const ids = ViewerUtils.queryValueToArray(req.query.ids);
       SessionAPIs.sessionsListFromIds(req, ids, fields, (err, list) => {
+        if (err) {
+          console.log('ERROR - getSessionsCSV', util.inspect(err, false, 50));
+          res.end(JSON.stringify({ success: false, text: 'Can\'t get sessions from IDs' }));
+        }
         SessionAPIs.#csvListWriter(req, res, list, reqFields);
       });
     } else {
@@ -2101,13 +2144,15 @@ class SessionAPIs {
         let nresults = [];
         async.each(sessions.aggregations.fileand.buckets, (nobucket, cb) => {
           sodc += nobucket.fileId.sum_other_doc_count;
-          async.each(nobucket.fileId.buckets, (fsitem, subCb) => {
-            Db.fileIdToFile(nobucket.key, fsitem.key, (file) => {
+          async.each(nobucket.fileId.buckets, async (fsitem) => {
+            try {
+              const file = await Db.fileIdToFile(nobucket.key, fsitem.key);
               if (file && file.name) {
                 nresults.push({ key: file.name, doc_count: fsitem.doc_count });
               }
-              subCb();
-            });
+            } catch (err) {
+              // Ignore error
+            }
           }, () => {
             cb();
           });
@@ -2146,7 +2191,7 @@ class SessionAPIs {
     // req.query.exp -> req.query.field by viewer.js:expToField
 
     if (req.query.field !== undefined && !ArkimeUtil.isString(req.query.field, 0)) {
-      return res.serverError(403, 'Bad \'field\' parameter');
+      return res.serverError(403, `Bad 'field' parameter`);
     }
 
     SessionAPIs.buildSessionQuery(req, (bsqErr, query, indices) => {
@@ -2283,16 +2328,19 @@ class SessionAPIs {
 
         const intermediateResults = [];
         function findFileNames () {
-          async.each(intermediateResults, (fsitem, cb) => {
+          async.each(intermediateResults, async (fsitem) => {
             const split = fsitem.key.split(':');
             const node = split[0];
             const fileId = split[1];
-            Db.fileIdToFile(node, fileId, (file) => {
+            try {
+              const file = await Db.fileIdToFile(node, fileId);
               if (file && file.name) {
                 queriesInfo.push({ key: file.name, doc_count: fsitem.doc_count, query: fsitem.query });
               }
-              cb();
-            });
+            } catch (err) {
+              // Ignore error
+            }
+            return;
           }, () => {
             endCb();
           });
@@ -2360,6 +2408,11 @@ class SessionAPIs {
     }
 
     SessionAPIs.buildSessionQuery(req, (err, query, indices) => {
+      if (err) {
+        console.log(`ERROR - ${req.method} /api/spigraphhierarchy`, util.inspect(err, false, 50));
+        return res.serverError(403, err);
+      }
+
       query.size = 0; // Don't need any real results, just aggregations
       delete query.sort;
       delete query.aggregations;
@@ -2374,12 +2427,18 @@ class SessionAPIs {
         // Require that each field exists
         query.query.bool.filter.push({ exists: { field: fields[i].dbField } });
 
+        lastQ.aggregations ??= { };
         if (fields[i].script) {
-          lastQ.aggregations = { field: { terms: { script: { lang: 'painless', source: fields[i].script }, size } } };
+          lastQ.aggregations.field = { terms: { script: { lang: 'painless', source: fields[i].script }, size } };
         } else {
-          lastQ.aggregations = { field: { terms: { field: fields[i].dbField, size } } };
+          lastQ.aggregations.field = { terms: { field: fields[i].dbField, size } };
         }
+
         lastQ = lastQ.aggregations.field;
+
+        lastQ.aggregations ??= { };
+        lastQ.aggregations.srcip = { cardinality: { field: 'source.ip' } };
+        lastQ.aggregations.dstip = { cardinality: { field: 'destination.ip' } };
       }
 
       if (Config.debug > 2) {
@@ -2404,14 +2463,23 @@ class SessionAPIs {
         function addDataToPie (buckets, addTo) {
           for (let i = 0; i < buckets.length; i++) {
             const bucket = buckets[i];
-            addTo.push({
+            const obj = {
               name: bucket.key,
               size: bucket.doc_count
-            });
+            };
+            if (bucket.srcip !== undefined) {
+              obj.srcips = bucket.srcip.value;
+              obj.dstips = bucket.dstip.value;
+            }
+            addTo.push(obj);
             if (bucket.field) {
               addTo[i].children = [];
               addTo[i].size = undefined; // size is interpreted from children
               addTo[i].sizeValue = bucket.doc_count; // keep sizeValue for display
+              if (bucket.srcip !== undefined) {
+                obj.srcips = bucket.srcip.value;
+                obj.dstips = bucket.dstip.value;
+              }
               addDataToPie(bucket.field.buckets, addTo[i].children);
             }
           }
@@ -2467,7 +2535,12 @@ class SessionAPIs {
    * @returns {string} The list of unique fields (with counts if requested)
    */
   static getUnique (req, res) {
-    ArkimeUtil.noCache(req, res, 'text/plain; charset=utf-8');
+    if (req.query.autocomplete !== undefined) {
+      // we want a json array returned when providing the autocomplete options in the search typeahead
+      ArkimeUtil.noCache(req, res, 'application/json; charset=utf-8');
+    } else {
+      ArkimeUtil.noCache(req, res, 'text/plain; charset=utf-8');
+    }
 
     // req.query.exp -> req.query.field by viewer.js:expToField
 
@@ -2570,16 +2643,18 @@ class SessionAPIs {
           });
         });
 
-        async.each(intermediateResults, (fsitem, cb) => {
+        async.each(intermediateResults, async (fsitem) => {
           const split = fsitem.key.split(':');
           const node = split[0];
           const fileId = split[1];
-          Db.fileIdToFile(node, fileId, (file) => {
+          try {
+            const file = await Db.fileIdToFile(node, fileId);
             if (file && file.name) {
               eachCb({ key: file.name, doc_count: fsitem.doc_count });
             }
-            cb();
-          });
+          } catch (err) {
+            // Ignore error
+          }
         }, () => {
           return res.end();
         });
@@ -2655,6 +2730,12 @@ class SessionAPIs {
     }
 
     SessionAPIs.buildSessionQuery(req, (err, query, indices) => {
+      if (err) {
+        console.log(`ERROR - ${req.method} /api/multiunique`, util.inspect(err, false, 50));
+        res.status(400);
+        return res.end(err);
+      }
+
       delete query.sort;
       delete query.aggregations;
       query.size = 0;
@@ -2753,7 +2834,17 @@ class SessionAPIs {
           if (Config.debug > 1) {
             console.log('/api/session/%s/%s/detail rendering', ArkimeUtil.sanitizeStr(req.params.nodeName), ArkimeUtil.sanitizeStr(req.params.id), data.replace(/>/g, '>\n'));
           }
-          res.send(data);
+          const html = sanitizeHtml(data, {
+            allowedTags: ['h3', 'h4', 'h5', 'h6', 'a', 'b', 'i', 'strong', 'em', 'div', 'pre', 'span', 'br', 'img', 'ul', 'li', 'b-dropdown', 'b-dropdown-item', 'arkime-toast', 'arkime-session-field', 'arkime-tag-sessions', 'arkime-export-pcap', 'arkime-remove-data', 'arkime-send-sessions', 'b-card-group', 'b-card', 'h4', 'dl', 'dt', 'dd', 'field-actions', 'b-dropdown-divider', 'template'],
+            allowedClasses: {
+              '*': ['ts-value', 'text-theme-quaternary', 'imagetag', 'file', 'nav-link', 'cursor-pointer', 'nav', 'nav-link', 'nav-pills', 'nav-item', 'mb-3', 'mb-2', 'me-1', 'me-5', 'ms-1', 'row', 'col-md-6', 'offset-md-6', 'sessionsrc', 'sessiondst', 'session-detail-ts', 'alert', 'alert-danger', 'session-detail', 'pull-right', 'small', 'dstcol', 'srccol', 'fa', 'fa-info-circle', 'fa-lg', 'fa-exclamation-triangle', 'sessionln', 'src-col-tip', 'dst-col-tip', 'fa-download', 'fa-arrow-circle-up', 'fa-arrow-circle-down', 'fa-link', 'clickable-label', 'detail-field', 'no-wrap', 'card-title', 'tag-list', 'btn', 'btn-xs', 'btn-theme-secondary', 'fa-plus-circle', 'str', 'bytes']
+            },
+            allowedAttributes: {
+              img: ['src'],
+              '*': [':download','#button-content', 'class', 'value', 'sessionid', 'hidePackets', 'v-if', 'target', 'href', ':href', '@click', 'v-has-permission', 'text', ':text', ':sessions', '@done', ':cluster', ':single', ':message', ':type', ':done', 'expr', ':expr', ':separator', ':field', 'pull-left', 'size', 'variant', 'columns', 'style', 'suffix', 'target', 'v-for', 'key', ':key', ':add', 'title']
+            }
+          });
+          res.send(html);
         });
       });
     });
@@ -3230,7 +3321,7 @@ class SessionAPIs {
    */
   static deleteData (req, res) {
     if (req.query.removeSpi !== 'true' && req.query.removePcap !== 'true') {
-      return res.serverError(403, 'You can\'t delete nothing');
+      return res.serverError(403, `You can't delete nothing`);
     }
 
     let whatToRemove;
@@ -3252,7 +3343,7 @@ class SessionAPIs {
         SessionAPIs.#scrubList(req, res, whatToRemove, list);
       });
     } else {
-      return res.serverError(403, 'Error: Missing expression. An expression is required so you don\'t delete everything.');
+      return res.serverError(403, `Error: Missing expression. An expression is required so you don't delete everything.`);
     }
   };
 
@@ -3380,7 +3471,7 @@ class SessionAPIs {
 
     req.query.saveId = req.query.saveId.replace(/[^-a-zA-Z0-9_]/g, '');
 
-    if (req.query.saveId.length === 0 || req.query.saveId === '__proto__') { return res.serverError(200, 'Bad saveId'); }
+    if (req.query.saveId.length === 0 || ArkimeUtil.isPP(req.query.saveId)) { return res.serverError(200, 'Bad saveId'); }
 
     let saveId = SessionAPIs.#saveIds[req.query.saveId];
     if (!saveId) {
@@ -3425,7 +3516,11 @@ class SessionAPIs {
     function saveSession () {
       const id = session.id;
       delete session.id;
-      Db.indexNow(Db.sid2Index(id), 'session', Db.sid2Id(id), session);
+      try {
+        Db.indexNow(Db.sid2Index(id), 'session', Db.sid2Id(id), session);
+      } catch (err) {
+        console.log(`ERROR - ${req.method} /api/sessions/receive`, util.inspect(err, false, 50));
+      }
     }
 
     function chunkWrite (chunk) {

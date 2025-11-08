@@ -28,7 +28,12 @@ function help () {
   console.log('  --webauth               Can auth using the web auth header or password');
   console.log('  --webauthonly           Can auth using the web auth header only, password ignored');
   console.log('  --packetSearch          Can create a packet search job (hunt)');
-  console.log('  --createOnly            Only create the user if it doesn\'t exist');
+  console.log('  --disablePcapDownload   The user can see the pcap but not download it');
+  console.log('  --hideFiles             Hide the files page from this user');
+  console.log('  --hidePcap              Hide the pcap from this user, only metadata is shown');
+  console.log('  --hideStats             Hide the stats page from this user');
+  console.log('  --timeLimit             Max time limit for searches in hours');
+  console.log(`  --createOnly            Only create the user if it doesn't exist`);
   console.log('  --roles                 Comma seperated list of roles');
   console.log('');
   console.log('Config Options:');
@@ -67,6 +72,7 @@ function main () {
       roles.add('superAdmin');
       break;
 
+    case '--removeEnabled':
     case '--remove':
     case '-remove':
       nuser.removeEnabled = true;
@@ -116,6 +122,32 @@ function main () {
       i++;
       break;
 
+    case '--hideFiles':
+    case '-hideFiles':
+      nuser.hideFiles = true;
+      break;
+
+    case '--hidePcap':
+    case '-hidePcap':
+      nuser.hidePcap = true;
+      break;
+
+    case '--hideStats':
+    case '-hideStats':
+      nuser.hideStats = true;
+      break;
+
+    case '--disablePcapDownload':
+    case '-disablePcapDownload':
+      nuser.disablePcapDownload = true;
+      break;
+
+    case '--timeLimit':
+    case '-timeLimit':
+      nuser.timeLimit = parseInt(process.argv[i + 1], 10);
+      i++;
+      break;
+
     default:
       console.log('Unknown option', process.argv[i]);
       help();
@@ -152,13 +184,13 @@ if (process.argv.length < 5) {
 }
 
 async function premain () {
-  await Config.initialize();
+  await Config.initialize({ initAuth: true });
 
   if (Config.nodeName() === 'cont3xt') {
     const usersUrl = Config.get('usersUrl');
     const usersEs = Config.getArray('usersElasticsearch', Config.get('elasticsearch', 'http://localhost:9200'));
     User.initialize({
-      insecure: ArkimeConfig.insecure,
+      insecure: ArkimeConfig.isInsecure([usersUrl, usersEs]),
       requestTimeout: Config.get('elasticsearchTimeout', 300),
       url: usersUrl,
       node: usersEs,
@@ -180,7 +212,7 @@ async function premain () {
       esClientKey: Config.get('esClientKey', null),
       esClientCert: Config.get('esClientCert', null),
       esClientKeyPass: Config.get('esClientKeyPass', null),
-      insecure: ArkimeConfig.insecure,
+      insecure: ArkimeConfig.isInsecure([escInfo, Config.getArray('usersElasticsearch')]),
       caTrustFile: Config.getFull(Config.nodeName(), 'caTrustFile'),
       usersHost: Config.getArray('usersElasticsearch'),
       usersPrefix: Config.get('usersPrefix'),

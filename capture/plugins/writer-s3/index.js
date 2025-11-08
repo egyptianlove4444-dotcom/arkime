@@ -10,9 +10,8 @@
 const { S3 } = require('@aws-sdk/client-s3');
 const async = require('async');
 const zlib = require('zlib');
-const { decompressSync } = require('@xingrz/cppzst');
 const S3s = {};
-const LRU = require('lru-cache');
+const { LRUCache } = require('lru-cache');
 const CacheInProgress = {};
 let Config;
 let Db;
@@ -25,7 +24,7 @@ const COMPRESSED_ZSTD = 2;
 
 const S3DEBUG = false;
 // Store up to 100 items
-const lru = new LRU({ max: 100 });
+const lru = new LRUCache({ max: 100 });
 
 /// ///////////////////////////////////////////////////////////////////////////////
 // https://coderwall.com/p/pq0usg/javascript-string-split-that-ll-return-the-remainder
@@ -70,6 +69,11 @@ function makeS3 (node, region, bucket) {
 
   if (Config.getFull(node, 's3UseHttp', false) === true) {
     s3Params.sslEnabled = false;
+    if (s3Params.endpoint && !s3Params.endpoint.startsWith('http')) {
+      s3Params.endpoint = 'http://' + s3Params.endpoint;
+    }
+  } else if (s3Params.endpoint && !s3Params.endpoint.startsWith('https')) {
+    s3Params.endpoint = 'https://' + s3Params.endpoint;
   }
 
   // Lets hope that we can find a credential provider elsewhere
@@ -77,15 +81,20 @@ function makeS3 (node, region, bucket) {
   return rv;
 }
 /// ///////////////////////////////////////////////////////////////////////////////
-function processSessionIdS3 (session, headerCb, packetCb, endCb, limit) {
+async function processSessionIdS3 (session, headerCb, packetCb, endCb, limit) {
   const fields = session._source || session.fields;
 
   // Get first pcap header
   let header, pcap, s3;
-  Db.fileIdToFile(fields.node, fields.packetPos[0] * -1, function (info) {
+  try {
+    const info = await Db.fileIdToFile(fields.node, fields.packetPos[0] * -1);
+
     if (Config.debug) {
       console.log(`File Info for ${fields.node}-${fields.packetPos[0] * -1}`, info);
     }
+
+    // Don't confuse with the s3 capture scheme which will have info.scheme set to s3
+    // s3://region/bucket/nodename/XXXX-YYMMDD-XXXX.pcap(.gz|.zst)
     const parts = splitRemain(info.name, '/', 4);
     info.compressionBlockSize ??= DEFAULT_COMPRESSED_BLOCK_SIZE;
 
@@ -119,7 +128,7 @@ function processSessionIdS3 (session, headerCb, packetCb, endCb, limit) {
         if (params.Key.endsWith('.gz')) {
           header = zlib.gunzipSync(body, { finishFlush: zlib.constants.Z_SYNC_FLUSH });
         } else if (params.Key.endsWith('.zst')) {
-          header = decompressSync(body);
+          header = zlib.zstdDecompressSync(body, { finishFlush: zlib.constants.Z_SYNC_FLUSH });
         } else {
           header = body;
         }
@@ -132,15 +141,18 @@ function processSessionIdS3 (session, headerCb, packetCb, endCb, limit) {
         readyToProcess();
       });
     }
-  });
+  } catch (error) {
+    return;
+  }
 
   function readyToProcess () {
     let itemPos = 0;
 
     function doProcess (data, nextCb) {
       let haveAllCached = data.compressed;
+
       // See if we have all the required decompressed blocks
-      for (let i = 0; i < data.subPackets.length; i++) {
+      for (let i = 0; haveAllCached && i < data.subPackets.length; i++) {
         const sp = data.subPackets[i];
         const decompressedCacheKey = 'data:' + data.params.Bucket + ':' + data.params.Key + ':' + sp.rangeStart;
         const cachedDecompressed = lru.get(decompressedCacheKey);
@@ -175,7 +187,7 @@ function processSessionIdS3 (session, headerCb, packetCb, endCb, limit) {
         for (let i = 0; i < data.subPackets.length; i++) {
           const sp = data.subPackets[i];
           const decompressedCacheKey = 'data:' + data.params.Bucket + ':' + data.params.Key + ':' + sp.rangeStart;
-          if (!CacheInProgress[decompressedCacheKey]) {
+          if (data.compressed && !CacheInProgress[decompressedCacheKey]) {
             CacheInProgress[decompressedCacheKey] = true;
           }
         }
@@ -201,7 +213,8 @@ function processSessionIdS3 (session, headerCb, packetCb, endCb, limit) {
                   decompressed[sp.rangeStart] = zlib.inflateRawSync(body.subarray(offset, offset + data.info.compressionBlockSize),
                     { finishFlush: zlib.constants.Z_SYNC_FLUSH });
                 } else if (data.compressed === COMPRESSED_ZSTD) {
-                  decompressed[sp.rangeStart] = decompressSync(body.subarray(offset, offset + data.info.compressionBlockSize));
+                  decompressed[sp.rangeStart] = zlib.zstdDecompressSync(body.subarray(offset, offset + data.info.compressionBlockSize),
+                    { finishFlush: zlib.constants.Z_SYNC_FLUSH });
                 }
                 const decompressedCacheKey = 'data:' + data.params.Bucket + ':' + data.params.Key + ':' + sp.rangeStart;
                 lru.set(decompressedCacheKey, decompressed[sp.rangeStart]);
@@ -331,7 +344,8 @@ function s3Expire () {
         must: [
           { range: { first: { lte: Math.floor(Date.now() / 1000 - (+Config.get('s3ExpireDays')) * 60 * 60 * 24) } } },
           { prefix: { name: 's3://' } }
-        ]
+        ],
+        must_not: { term: { locked: 1 } }
       }
     },
     sort: { first: { order: 'asc' } }

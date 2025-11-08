@@ -309,6 +309,9 @@ my $hToken = getTokenCookie('sac-huntuser');
   ok(exists $hunts->{data}->[4]->{query});
   isnt($hunts->{data}->[4]->{query}, undef, "should be missing query field");
 
+  $hunts = multiGet("/api/hunts?all");
+  is ($hunts->{recordsTotal}, 6, 'Wrong number of hunts');
+
 
 # cleanup
   viewerDeleteToken("/api/hunt/$id5?arkimeRegressionUser=anonymous", $token);
@@ -316,12 +319,6 @@ my $hToken = getTokenCookie('sac-huntuser');
   viewerDeleteToken("/api/hunt/$id7?arkimeRegressionUser=anonymous", $token);
   viewerDeleteToken("/api/hunt/$id8?arkimeRegressionUser=anonymous", $token);
   viewerDeleteToken("/api/view/$viewId?arkimeRegressionUser=user2", $otherToken);
-
-
-# multiget should return an error
-  my $mjson = multiGet("/api/hunts");
-  is ($mjson->{text}, "Not supported in multies", "Hunt not supported in multies");
-
 
 ##  Now test hunts
   my (%HUNTS, %RESULTS);
@@ -371,7 +368,7 @@ my $hToken = getTokenCookie('sac-huntuser');
   createHunts("hexregex", "766..63d");
 
   # create a hunt for regex dos
-  $HUNTS{"raw-regex-both-(.*a){25}x"} = viewerPostToken("/api/hunt?arkimeRegressionUser=sac-huntuser", '{"totalSessions":67,"name":"' . "raw-regex-both-(.*a){25}x-$$" . '", "size":"50","search":"(.*a){25}x","searchType":"regex","type":"raw","src":true,"dst":true,"query":{"startTime":1430916462,"stopTime":1569170858,"expression":"tags != bdat*"}}', $hToken);
+  $HUNTS{"raw-regex-both-(.*a){25}x"} = viewerPostToken("/api/hunt?arkimeRegressionUser=sac-huntuser", '{"totalSessions":67,"name":"' . "raw-regex-both-(.*a){25}x-$$" . '", "size":"50","search":"(.*a){25}x","searchType":"regex","type":"raw","src":true,"dst":true,"query":{"startTime":1430916462,"stopTime":1569170858,"expression":"tags != bdat* && tags != scheme*"}}', $hToken);
 
   # Actually process the hunts
   viewerGet("/regressionTests/processHuntJobs");
@@ -443,8 +440,8 @@ my $hToken = getTokenCookie('sac-huntuser');
   my $id = $HUNTS{"raw-regex-both-(.*a){25}x"}->{hunt}->{id};
   my $result = $RESULTS{$id};
   is ($result->{status}, 'finished', "raw-regex-both-(.*a){25}x finished check");
-  is ($result->{searchedSessions}, 68, "raw-regex-both-(.*a){25}x searchedSessions check");
-  is ($result->{totalSessions}, 68, "raw-regex-both-(.*a){25}x totalSessions check");
+  is ($result->{searchedSessions}, 76, "raw-regex-both-(.*a){25}x searchedSessions check");
+  is ($result->{totalSessions}, 76, "raw-regex-both-(.*a){25}x totalSessions check");
   is ($result->{matchedSessions}, 0, "raw-regex-both-(.*a){25}x match check");
 
 # cleanup

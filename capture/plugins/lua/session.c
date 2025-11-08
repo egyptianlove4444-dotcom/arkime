@@ -6,6 +6,7 @@
  */
 #include "molua.h"
 #include <arpa/inet.h>
+#include <sys/socket.h>
 /******************************************************************************/
 
 extern lua_State *Ls[ARKIME_MAX_PACKET_THREADS];
@@ -69,7 +70,7 @@ LOCAL void *checkArkimeSession (lua_State *L, int index)
     return ms;
 }
 /******************************************************************************/
-void *molua_pushArkimeSession (lua_State *L, const ArkimeSession_t *ms)
+LOCAL void *molua_pushArkimeSession (lua_State *L, const ArkimeSession_t *ms)
 {
     void **pms = (void **)lua_newuserdata(L, sizeof(void *));
     *pms = (void *)ms;
@@ -79,7 +80,7 @@ void *molua_pushArkimeSession (lua_State *L, const ArkimeSession_t *ms)
 }
 
 /******************************************************************************/
-void molua_classify_cb(ArkimeSession_t *session, const uint8_t *data, int len, int which, void *uw)
+LOCAL void molua_classify_cb(ArkimeSession_t *session, const uint8_t *data, int len, int which, void *uw)
 {
     lua_State *L = Ls[session->thread];
     lua_getglobal(L, uw);
@@ -93,7 +94,7 @@ void molua_classify_cb(ArkimeSession_t *session, const uint8_t *data, int len, i
 
 
 /******************************************************************************/
-int molua_parsers_cb(ArkimeSession_t *session, void *uw, const uint8_t *data, int remaining, int which)
+LOCAL int molua_parsers_cb(ArkimeSession_t *session, void *uw, const uint8_t *data, int remaining, int which)
 {
     lua_State *L = Ls[session->thread];
     lua_rawgeti(L, LUA_REGISTRYINDEX, (long)uw);
@@ -113,7 +114,7 @@ int molua_parsers_cb(ArkimeSession_t *session, void *uw, const uint8_t *data, in
     return 0;
 }
 /******************************************************************************/
-void molua_parsers_free_cb(ArkimeSession_t *session, void *uw)
+LOCAL void molua_parsers_free_cb(ArkimeSession_t *session, void *uw)
 {
     lua_State *L = Ls[session->thread];
     luaL_unref(L, LUA_REGISTRYINDEX, (long)uw);
@@ -147,17 +148,17 @@ LOCAL int MS_register_udp_classifier(lua_State *L)
         return luaL_error(L, "usage: <name> <offset> <match> <function>");
     }
 
-    char *name      = g_strdup(lua_tostring(L, 1));
-    char  offset    = lua_tonumber(L, 2);
-    int   match_len = lua_rawlen(L, 3);
-    guchar *match     = g_memdup(lua_tostring(L, 3), match_len);
-    char *function  = g_strdup(lua_tostring(L, 4));
+    const char *name    = g_strdup(lua_tostring(L, 1));
+    char  offset        = lua_tonumber(L, 2);
+    int   match_len     = lua_rawlen(L, 3);
+    const guchar *match = g_memdup(lua_tostring(L, 3), match_len);
+    char *function      = g_strdup(lua_tostring(L, 4));
 
     arkime_parsers_classifier_register_udp(name, function, offset, match, match_len, molua_classify_cb);
     return 0;
 }
 /******************************************************************************/
-void molua_http_cb (int callback_type, ArkimeSession_t *session, http_parser *hp, const char *at, size_t length)
+LOCAL void molua_http_cb (int callback_type, ArkimeSession_t *session, http_parser *hp, const char *at, size_t length)
 {
     MoluaPlugin_t *mp = session->pluginData[molua_pluginIndex];
     lua_State *L = Ls[session->thread];
@@ -199,7 +200,7 @@ void molua_http_cb (int callback_type, ArkimeSession_t *session, http_parser *hp
     }
 }
 /******************************************************************************/
-void molua_http_on_body_cb (ArkimeSession_t *session, http_parser *hp, const char *at, size_t length)
+LOCAL void molua_http_on_body_cb (ArkimeSession_t *session, http_parser *hp, const char *at, size_t length)
 {
     MoluaPlugin_t *mp = session->pluginData[molua_pluginIndex];
     lua_State *L = Ls[session->thread];
@@ -381,7 +382,7 @@ LOCAL void molua_pre_save(ArkimeSession_t *session, int final)
 /******************************************************************************/
 LOCAL void molua_save(ArkimeSession_t *session, int final)
 {
-    const MoluaPlugin_t *mp = session->pluginData[molua_pluginIndex];
+    MoluaPlugin_t *mp = session->pluginData[molua_pluginIndex];
     lua_State *L = Ls[session->thread];
     int i;
     for (i = 0; i < callbackRefsCnt[MOLUA_REF_SAVE]; i++) {
@@ -396,6 +397,16 @@ LOCAL void molua_save(ArkimeSession_t *session, int final)
             molua_stackDump(L);
             LOGEXIT("error running save callback function %s type %d", lua_tostring(L, -1), MOLUA_REF_SAVE);
         }
+    }
+
+    mp = session->pluginData[molua_pluginIndex];
+
+    if (final && mp) {
+        if (mp->table) {
+            luaL_unref(Ls[session->thread], LUA_REGISTRYINDEX, mp->table);
+        }
+        ARKIME_TYPE_FREE(MoluaPlugin_t, mp);
+        session->pluginData[molua_pluginIndex] = 0;
     }
 }
 /******************************************************************************/
@@ -688,19 +699,19 @@ LOCAL int MS_get(lua_State *L)
             if (strncmp(exp, "tcpflags.", 9) != 0)
                 break;
             if (strcmp(exp + 9, "syn") == 0)
-                lua_pushinteger(L, session->tcpFlagCnt[ARKIME_TCPFLAG_SYN]);
+                lua_pushinteger(L, session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_SYN]);
             else if (strcmp(exp + 9, "syn-ack") == 0)
-                lua_pushinteger(L, session->tcpFlagCnt[ARKIME_TCPFLAG_SYN_ACK]);
+                lua_pushinteger(L, session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_SYN_ACK]);
             else if (strcmp(exp + 9, "ack") == 0)
-                lua_pushinteger(L, session->tcpFlagCnt[ARKIME_TCPFLAG_ACK]);
+                lua_pushinteger(L, session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_ACK]);
             else if (strcmp(exp + 9, "psh") == 0)
-                lua_pushinteger(L, session->tcpFlagCnt[ARKIME_TCPFLAG_PSH]);
+                lua_pushinteger(L, session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_PSH]);
             else if (strcmp(exp + 9, "rst") == 0)
-                lua_pushinteger(L, session->tcpFlagCnt[ARKIME_TCPFLAG_RST]);
+                lua_pushinteger(L, session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_RST]);
             else if (strcmp(exp + 9, "FIN") == 0)
-                lua_pushinteger(L, session->tcpFlagCnt[ARKIME_TCPFLAG_FIN]);
+                lua_pushinteger(L, session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_FIN]);
             else if (strcmp(exp + 9, "URG") == 0)
-                lua_pushinteger(L, session->tcpFlagCnt[ARKIME_TCPFLAG_URG]);
+                lua_pushinteger(L, session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_URG]);
             else
                 break;
             return 1;
@@ -893,7 +904,7 @@ LOCAL int MSP__index(lua_State *L)
         {"addr1",      MSP_get_addr1},
         {"srcIp",      MSP_get_addr1},
         {"addr2",      MSP_get_addr2},
-        {"dstIp",      MSP_get_addr1},
+        {"dstIp",      MSP_get_addr2},
         {"port1",      MSP_get_port1},
         {"srcPort",    MSP_get_port1},
         {"port2",      MSP_get_port2},

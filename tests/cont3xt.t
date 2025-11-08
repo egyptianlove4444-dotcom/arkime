@@ -1,5 +1,5 @@
 # Test cont3xt.js
-use Test::More tests => 167;
+use Test::More tests => 168;
 use Test::Differences;
 use Data::Dumper;
 use ArkimeTest;
@@ -729,6 +729,8 @@ $json = cont3xtPost('/api/integration/search', to_json({
   doIntegrations => ["DNS"]
 }));
 
+#diag Dumper($json);
+
 is($json->[0]->{purpose}, "init"); # initial integration chunk
 is($json->[0]->{sent}, 0);
 is($json->[0]->{text}, "more to follow");
@@ -745,13 +747,16 @@ is($json->[2]->{indicator}->{itype}, "ip");
 is($json->[2]->{parentIndicator}->{query}, "example.com");
 is($json->[2]->{parentIndicator}->{itype}, "domain");
 
-is($json->[5]->{purpose}, "data");
-is($json->[5]->{indicator}->{query}, "example.com");
-is($json->[5]->{indicator}->{itype}, "domain");
+my $size = scalar @{$json};
 
-is($json->[6]->{purpose}, "finish"); # last integration chunk
-is($json->[6]->{resultCount}, 0);
-is (scalar @{$json}, 7);
+is($json->[$size - 2]->{purpose}, "data");
+is($json->[$size - 2]->{indicator}->{query}, "example.com");
+is($json->[$size - 2]->{indicator}->{itype}, "domain");
+is($json->[$size - 2]->{data}->{_cont3xt}->{count}, 7);
+
+is($json->[$size - 1]->{purpose}, "finish"); # last integration chunk
+is($json->[$size - 1]->{resultCount}, 7);
+is (scalar @{$json}, $size);
 
 $json = cont3xtPost('/api/integration/search', to_json({
   query => "http://example.com/blah.html",

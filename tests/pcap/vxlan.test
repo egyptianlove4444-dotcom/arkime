@@ -27,6 +27,7 @@
             ],
             "dstOuterOuiCnt" : 1,
             "dstRIR" : "ARIN",
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1467818432675,
             "ipProtocol" : 17,
@@ -75,6 +76,10 @@
             ],
             "srcOuterOuiCnt" : 1,
             "srcRIR" : "ARIN",
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 0,
             "vni" : [
                123
@@ -140,6 +145,11 @@
                "ARIN"
             ],
             "dstRIR" : "TEST",
+            "dstTTL" : [
+               64
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1467818432676,
             "icmp" : {
@@ -156,6 +166,7 @@
             "length" : 3004,
             "network" : {
                "bytes" : 1184,
+               "community_id" : "1:YcMyyWJfhc95EW1GfXt6jlZ3DiQ=",
                "packets" : 8
             },
             "node" : "test",
@@ -234,6 +245,10 @@
                "ARIN",
                "ARIN"
             ],
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "dstip",
                "srcip"

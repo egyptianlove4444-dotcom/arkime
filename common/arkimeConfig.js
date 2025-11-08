@@ -9,8 +9,8 @@
 const ArkimeUtil = require('./arkimeUtil');
 const fs = require('fs');
 const axios = require('axios');
-const ini = require('iniparser');
 const yaml = require('js-yaml');
+const https = require('https');
 
 class ArkimeConfig {
   static debug = 0;
@@ -41,6 +41,10 @@ class ArkimeConfig {
   static async initialize (options) {
     ArkimeConfig.#configFile ??= options.defaultConfigFile;
 
+    if (ArkimeConfig.debug > 1) {
+      console.log('ArkimeConfig.initialize', ArkimeConfig.#configFile, options);
+    }
+
     if (options.defaultSections === undefined) {
       console.trace('defaultSections option must be set');
       process.exit();
@@ -60,24 +64,31 @@ class ArkimeConfig {
 
     ArkimeConfig.#uri = ArkimeConfig.#configFile;
 
+    // If ARKIME__usersElasticsearch is set then create a temp config
+    if (process.env.ARKIME__usersElasticsearch) {
+      ArkimeConfig.#config = {
+        [ArkimeConfig.#defaultSections[ArkimeConfig.#defaultSections.length - 1]]: {
+          usersElasticsearch: process.env.ARKIME__usersElasticsearch,
+          usersElasticsearchBasicAuth: process.env.ARKIME__usersElasticsearchBasicAuth,
+          usersPrefix: process.env.ARKIME__usersPrefix
+        }
+      };
+    }
+
     const parts = ArkimeConfig.#uri.split('://');
 
     if (parts.length === 1) {
+      let missing = false;
       try { // check if the file exists
         fs.accessSync(ArkimeConfig.#uri, fs.constants.F_OK);
       } catch (err) { // if the file doesn't exist, create it
         console.log(`WARNING - ${ArkimeConfig.#uri} doesn't exist`);
-        ArkimeConfig.#config = {};
-
-        if (ArkimeConfig.#dumpConfig) {
-          console.error('OVERRIDE', ArkimeConfig.#override);
-          console.error('CONFIG', ArkimeConfig.#config);
-          if (ArkimeConfig.regressionTests) { process.exit(); }
-        }
-        return;
+        missing = true;
       }
 
-      if (ArkimeConfig.#uri.endsWith('json')) {
+      if (missing) {
+        ArkimeConfig.#configImpl = ArkimeConfig.#schemes.missing;
+      } else if (ArkimeConfig.#uri.endsWith('json')) {
         ArkimeConfig.#configImpl = ArkimeConfig.#schemes.json;
       } else if (ArkimeConfig.#uri.endsWith('yaml') || ArkimeConfig.#uri.endsWith('yml')) {
         ArkimeConfig.#configImpl = ArkimeConfig.#schemes.yaml;
@@ -93,7 +104,7 @@ class ArkimeConfig {
     // Load includes, currently must be ini
     ArkimeConfig.#loadIncludes(ArkimeConfig.get('includes'));
 
-    // Setup any deaults
+    // Setup any defaults
     //
     if (ArkimeConfig.debug === 0) {
       ArkimeConfig.debug = parseInt(ArkimeConfig.get('debug', 0));
@@ -117,14 +128,64 @@ class ArkimeConfig {
   }
 
   // ----------------------------------------------------------------------------
+  static isInsecure (urls) {
+    if (ArkimeConfig.insecure) {
+      return true;
+    }
+
+    if (!urls) {
+      return false;
+    }
+
+    for (let url of urls) {
+      if (!url) {
+        continue;
+      }
+      if (Array.isArray(url)) {
+        url = url[0];
+      }
+      const u = new URL(url);
+      if (u.origin?.startsWith('https://localhost') || u.origin?.startsWith('https://127.0.0.1')) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // ----------------------------------------------------------------------------
   /**
    * Reload the config file
    */
   static async reload () {
     ArkimeConfig.#config = await ArkimeConfig.#configImpl.load(ArkimeConfig.#uri);
+
+    /* Setup any environment variable
+     * ARKIME__var - will convert to default var=value
+     * ARKIME_section__var - convert to section var=value
+     * Replace DASH, COLON, DOT, SLASH with -, :, ., /
+     */
+    Object.keys(process.env).filter(e => e.startsWith('ARKIME_')).forEach(e => {
+      let section, key;
+      if (e.startsWith('ARKIME__')) {
+        section = ArkimeConfig.#defaultSections[ArkimeConfig.#defaultSections.length - 1];
+        key = e.substring(8);
+      } else {
+        const parts = e.substring(7).split('__');
+        section = parts[0].replace(/DASH/g, '-').replace(/COLON/g, ':').replace(/DOT/g, '.').replace(/SLASH/g, '/');
+        key = parts[1];
+      }
+      if (section === undefined || key === undefined) { return; }
+      key = key.replace(/DASH/g, '-').replace(/COLON/g, ':').replace(/DOT/g, '.').replace(/SLASH/g, '/');
+
+      if (ArkimeConfig.#config[section] === undefined) {
+        ArkimeConfig.#config[section] = {};
+      }
+      ArkimeConfig.#config[section][key] = process.env[e];
+    });
+
     if (ArkimeConfig.#dumpConfig) {
-      console.error('OVERRIDE', ArkimeConfig.#override);
-      console.error('CONFIG', ArkimeConfig.#config);
+      console.error(JSON.stringify({ OVERRIDE: Object.fromEntries(ArkimeConfig.#override), CONFIG: ArkimeConfig.#config }, false, 2));
       if (ArkimeConfig.regressionTests) { process.exit(); }
     }
   }
@@ -263,7 +324,7 @@ class ArkimeConfig {
         console.log("ERROR - Couldn't open config includes file '%s'", file);
         process.exit(1);
       }
-      const config = ini.parseSync(file);
+      const config = ArkimeUtil.parseIniSync(file);
       for (const group in config) {
         if (!ArkimeConfig.#config[group]) {
           ArkimeConfig.#config[group] = config[group];
@@ -339,7 +400,7 @@ ArkimeConfig.processArgs();
 // ----------------------------------------------------------------------------
 class ConfigIni {
   static async load (uri) {
-    return ini.parseSync(uri);
+    return ArkimeUtil.parseIniSync(uri);
   }
 
   static save (uri, config, cb) {
@@ -364,6 +425,14 @@ class ConfigIni {
   }
 }
 ArkimeConfig.registerScheme('ini', ConfigIni);
+
+// ----------------------------------------------------------------------------
+class ConfigMissing {
+  static async load (uri) {
+    return {};
+  }
+}
+ArkimeConfig.registerScheme('missing', ConfigMissing);
 
 // ----------------------------------------------------------------------------
 
@@ -497,13 +566,15 @@ ArkimeConfig.registerScheme('redis-cluster', ConfigRedisCluster);
 // ----------------------------------------------------------------------------
 class ConfigElasticsearch {
   static async load (uri) {
-    const url = uri.replace('elasticsearch', 'http').replace('opensearch', 'http');
-    if (!url.includes('/_doc/')) {
+    const info = ArkimeUtil.createElasticsearchInfo(uri);
+    const httpsAgent = ArkimeConfig.isInsecure([info.url]) ? new https.Agent({ rejectUnauthorized: false }) : undefined;
+
+    if (!info.url.includes('/_doc/')) {
       throw new Error('Missing _doc in url, should be format elasticsearch://user:pass@host:port/INDEX/_doc/DOC');
     }
 
     try {
-      const response = await axios.get(url);
+      const response = await axios.get(info.url, { auth: info.auth, httpsAgent });
       return response.data._source;
     } catch (error) {
       if (error.response && error.response.status === 404) {
@@ -514,9 +585,10 @@ class ConfigElasticsearch {
   }
 
   static save (uri, config, cb) {
-    const url = uri.replace('elasticsearchs', 'https').replace('opensearchs', 'https').replace('elasticsearch', 'http').replace('opensearch', 'http');
+    const info = ArkimeUtil.createElasticsearchInfo(uri);
+    const httpsAgent = ArkimeConfig.isInsecure([info.url]) ? new https.Agent({ rejectUnauthorized: false }) : undefined;
 
-    axios.post(url, JSON.stringify(config), { headers: { 'Content-Type': 'application/json' } })
+    axios.post(info.url, JSON.stringify(config), { headers: { 'Content-Type': 'application/json' }, auth: info.auth, httpsAgent })
       .then((response) => {
         cb(null);
       })
@@ -538,7 +610,7 @@ class ConfigHttp {
       if (typeof response.data === 'object') {
         return response.data;
       } else if (uri.endsWith('.ini')) {
-        return ini.parseString(response.data);
+        return ArkimeUtil.parseIniString(response.data);
       } else if (uri.endsWith('.yaml') || uri.endsWith('.yml')) {
         return yaml.load(response.data);
       } else {

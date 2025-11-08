@@ -17,7 +17,7 @@ extern ArkimeConfig_t        config;
 LOCAL  pcap_t               *pcaps[MAX_INTERFACES];
 
 /******************************************************************************/
-int reader_libpcap_stats(ArkimeReaderStats_t *stats)
+LOCAL int reader_libpcap_stats(ArkimeReaderStats_t *stats)
 {
     stats->dropped = 0;
     stats->total = 0;
@@ -36,7 +36,7 @@ int reader_libpcap_stats(ArkimeReaderStats_t *stats)
     return 0;
 }
 /******************************************************************************/
-void reader_libpcap_pcap_cb(u_char *batch, const struct pcap_pkthdr *h, const u_char *bytes)
+LOCAL void reader_libpcap_pcap_cb(u_char *batch, const struct pcap_pkthdr *h, const u_char *bytes)
 {
     if (unlikely(h->caplen != h->len) && !config.readTruncatedPackets && !config.ignoreErrors) {
         LOGEXIT("ERROR - Arkime requires full packet captures caplen: %d pktlen: %d\n"
@@ -58,15 +58,18 @@ void reader_libpcap_pcap_cb(u_char *batch, const struct pcap_pkthdr *h, const u_
 /******************************************************************************/
 LOCAL void *reader_libpcap_thread(gpointer posv)
 {
-    long    pos = (long)posv;
-    pcap_t *pcap = pcaps[pos];
+    long    interface = (long)posv;
+    pcap_t *pcap = pcaps[interface];
     if (config.debug)
         LOG("THREAD %p", (gpointer)pthread_self());
 
+    int initFunc = arkime_get_named_func("arkime_reader_thread_init");
+    arkime_call_named_func(initFunc, interface, NULL);
+
     ArkimePacketBatch_t   batch;
     arkime_packet_batch_init(&batch);
-    batch.readerPos = pos;
-    while (1) {
+    batch.readerPos = interface;
+    while (!config.quitting) {
         int r = pcap_dispatch(pcap, 10000, reader_libpcap_pcap_cb, (u_char *)&batch);
         arkime_packet_batch_flush(&batch);
 
@@ -78,10 +81,13 @@ LOCAL void *reader_libpcap_thread(gpointer posv)
     }
     //ALW - Need to close after packet finishes
     //pcap_close(pcap);
+
+    int exitFunc = arkime_get_named_func("arkime_reader_thread_exit");
+    arkime_call_named_func(exitFunc, interface, NULL);
     return NULL;
 }
 /******************************************************************************/
-void reader_libpcap_start()
+LOCAL void reader_libpcap_start()
 {
     //ALW - Bug: assumes all linktypes are the same
     arkime_packet_set_dltsnap(pcap_datalink(pcaps[0]), pcap_snapshot(pcaps[0]));
@@ -107,7 +113,7 @@ void reader_libpcap_start()
     }
 }
 /******************************************************************************/
-void reader_libpcap_stop()
+LOCAL void reader_libpcap_stop()
 {
     int i;
     for (i = 0; i < MAX_INTERFACES && config.interface[i]; i++) {
@@ -116,8 +122,7 @@ void reader_libpcap_stop()
     }
 }
 /******************************************************************************/
-pcap_t *
-reader_libpcap_open_live(const char *source, int snaplen, int promisc, int to_ms, char *errbuf)
+LOCAL pcap_t *reader_libpcap_open_live(const char *source, int snaplen, int promisc, int to_ms, char *errbuf)
 {
     pcap_t *p;
     int status;
@@ -162,7 +167,7 @@ fail:
     return (NULL);
 }
 /******************************************************************************/
-void reader_libpcap_init(char *UNUSED(name))
+void reader_libpcap_init(const char *UNUSED(name))
 {
     char errbuf[1024];
 

@@ -41,9 +41,6 @@ LOCAL  int                  offlineDispatchAfter;
 extern ArkimeFilenameOps_t  readerFilenameOps[256];
 extern int                  readerFilenameOpsNum;
 
-LOCAL uint64_t              lastBytes;
-LOCAL uint64_t              lastPackets;
-
 #ifdef HAVE_SYS_INOTIFY_H
 #include <sys/inotify.h>
 LOCAL int         monitorFd;
@@ -166,7 +163,10 @@ LOCAL void reader_libpcapfile_init_monitor()
 #else
 LOCAL void reader_libpcapfile_init_monitor()
 {
-    LOGEXIT("ERROR - Monitoring not supporting on this OS");
+    if (config.commandSocket || config.commandList)
+        LOG("ERROR - Monitoring not supporting on this OS");
+    else
+        LOGEXIT("ERROR - Monitoring not supporting on this OS");
 }
 #endif
 /******************************************************************************/
@@ -424,7 +424,12 @@ LOCAL void reader_libpcapfile_pcap_cb(u_char *UNUSED(user), const struct pcap_pk
                 h->caplen, h->len);
     }
 
-    lastPackets++;
+    if (unlikely(h->caplen > 0xffff)) {
+        return;
+    }
+
+    offlineInfo[readerPos].lastPackets++;
+    offlineInfo[readerPos].lastPacketTime = h->ts;
 
     packet->pktlen        = h->caplen;
     packet->pkt           = (u_char *)bytes;
@@ -434,7 +439,7 @@ LOCAL void reader_libpcapfile_pcap_cb(u_char *UNUSED(user), const struct pcap_pk
     packet->readerFilePos = ftell(offlineFile) - 16 - h->len;
     packet->readerPos     = readerPos;
 
-    lastBytes += packet->pktlen + 16;
+    offlineInfo[readerPos].lastBytes += packet->pktlen + 16;
 
     arkime_packet_batch(&batch, packet);
 }
@@ -484,13 +489,17 @@ LOCAL gboolean reader_libpcapfile_read()
             int rc = unlink(offlinePcapFilename);
             if (rc != 0)
                 LOG("Failed to delete file %s %s (%d)", offlinePcapFilename, strerror(errno), errno);
+        } else if (r < 0) {
+            LOG("Failed pcap_dispatch on file %s: '%s'", offlinePcapFilename, pcap_geterr(pcap));
+            if (config.pcapDelete && config.ignoreErrors) {
+                LOG("Force deleting %s", offlinePcapFilename);
+                int rc = unlink(offlinePcapFilename);
+                if (rc != 0)
+                    LOG("Failed to force delete file %s %s (%d)", offlinePcapFilename, strerror(errno), errno);
+            }
         }
         if (!config.dryRun && !config.copyPcap) {
-            // Make sure the output file has been opened otherwise we can't update the entry
-            while (offlineInfo[readerPos].outputId == 0 || arkime_http_queue_length_best(esServer) > 0) {
-                g_main_context_iteration(NULL, TRUE);
-            }
-            arkime_db_update_filesize(offlineInfo[readerPos].outputId, lastBytes, lastBytes, lastPackets);
+            arkime_packet_batch_end_of_file(readerPos);
         }
         pcap_close(pcap);
         if (reader_libpcapfile_next()) {
@@ -514,7 +523,7 @@ LOCAL void reader_libpcapfile_opened()
 
     if (config.flushBetween) {
         arkime_session_flush();
-        g_main_context_iteration(NULL, TRUE);
+        g_main_context_iteration(NULL, FALSE);
         int rc[4];
 
         // Pause until all packets and commands are done
@@ -523,7 +532,7 @@ LOCAL void reader_libpcapfile_opened()
                 LOG("Waiting next file %d %d %d %d", rc[0], rc[1], rc[2], rc[3]);
             }
             usleep(5000);
-            g_main_context_iteration(NULL, TRUE);
+            g_main_context_iteration(NULL, FALSE);
         }
     }
 
@@ -593,8 +602,7 @@ LOCAL void reader_libpcapfile_opened()
         }
     }
 
-    lastBytes = 24;
-    lastPackets = 0;
+    offlineInfo[readerPos].lastBytes = 24;
 }
 
 /******************************************************************************/
@@ -610,7 +618,7 @@ LOCAL void reader_libpcapfile_start()
     }
 }
 /******************************************************************************/
-void reader_libpcapfile_init(char *UNUSED(name))
+void reader_libpcapfile_init(const char *UNUSED(name))
 {
     offlineDispatchAfter        = arkime_config_int(NULL, "offlineDispatchAfter", 2500, 1, 0x7fff);
 

@@ -1,4 +1,4 @@
-use Test::More tests => 52;
+use Test::More tests => 57;
 use Cwd;
 use URI::Escape;
 use ArkimeTest;
@@ -34,6 +34,16 @@ cmp_ok ($json->{recordsFiltered}, ">=", 108);
 delete $json->{data}->[0]->{first};
 cmp_ok ($json->{data}->[0]->{num}, "<", $json->{data}->[1]->{num});
 
+# Check lastTimestamp everywhere
+my $good = 1;
+foreach my $file (@{$json->{data}}) {
+    if (!exists $file->{lastTimestamp}) {
+        $good = 0;
+        diag("lastTimestamp not found for file $file->{name}");
+    }
+}
+is ($good, 1, "lastTimestamp found for all files");
+
 # name sort
 $json = get("/api/files?sortField=name");
 
@@ -52,7 +62,11 @@ cmp_ok ($json->{recordsFiltered}, "==", 1);
 delete $json->{data}->[0]->{id};
 delete $json->{data}->[0]->{num};
 delete $json->{data}->[0]->{first};
-eq_or_diff($json->{data}->[0], from_json('{"locked":1,"filesize":9159,"node":"test","name":"/DIR/tests/pcap/v6-http.pcap","cratio":0, "packets":55, "packetsSize":9159}'));
+delete $json->{data}->[0]->{"startTimestamp"};
+delete $json->{data}->[0]->{"finishTimestamp"};
+delete $json->{data}->[0]->{"firstTimestamp"};
+delete $json->{data}->[0]->{"lastTimestamp"};
+eq_or_diff($json->{data}->[0], from_json('{"locked":1,"filesize":9159,"node":"test","name":"/DIR/tests/pcap/v6-http.pcap","cratio":0, "packets":55, "packetsSize":9159, "sessionsStarted": 6, "sessionsPresent": 6}'));
 
 # filter 2
 $json = get("/api/files?sortField=name&desc=true&filter=/v6");
@@ -62,14 +76,37 @@ cmp_ok ($json->{recordsFiltered}, "==", 2);
 delete $json->{data}->[0]->{id};
 delete $json->{data}->[0]->{num};
 delete $json->{data}->[0]->{first};
+delete $json->{data}->[0]->{"startTimestamp"};
+delete $json->{data}->[0]->{"finishTimestamp"};
+delete $json->{data}->[0]->{"firstTimestamp"};
+delete $json->{data}->[0]->{"lastTimestamp"};
 delete $json->{data}->[1]->{id};
 delete $json->{data}->[1]->{num};
 delete $json->{data}->[1]->{first};
-eq_or_diff($json->{data}, from_json('[{"locked":1,"filesize":28251,"node":"test","name":"/DIR/tests/pcap/v6.pcap","cratio":0, "packets":161, "packetsSize":28251},' .
-                                     '{"locked":1,"filesize":9159,"node":"test","name":"/DIR/tests/pcap/v6-http.pcap","cratio":0, "packets":55, "packetsSize":9159}]'));
+delete $json->{data}->[1]->{"startTimestamp"};
+delete $json->{data}->[1]->{"finishTimestamp"};
+delete $json->{data}->[1]->{"firstTimestamp"};
+delete $json->{data}->[1]->{"lastTimestamp"};
+eq_or_diff($json->{data}, from_json('[{"locked":1,"filesize":28251,"node":"test","name":"/DIR/tests/pcap/v6.pcap","cratio":0, "packets":161, "packetsSize":28251, "sessionsStarted": 42, "sessionsPresent": 42},' .
+                                     '{"locked":1,"filesize":9159,"node":"test","name":"/DIR/tests/pcap/v6-http.pcap","cratio":0, "packets":55, "packetsSize":9159, "sessionsStarted": 6, "sessionsPresent": 6}]'));
 
 # filter emptry
 $json = get("/api/files?sortField=name&desc=true&filter=sillyname");
 
 cmp_ok ($json->{recordsTotal}, ">=", 108);
 cmp_ok ($json->{recordsFiltered}, "==", 0);
+
+# empty file
+my $cmd = "../capture/capture $ArkimeTest::es -c config.test.ini -n test --copy -r pcap/empty.pcap";
+system("$cmd");
+
+$cmd = "../capture/capture $ArkimeTest::es --scheme -c config.test.ini -n test --copy -r pcap/empty.pcap";
+system("$cmd");
+
+$json = get("/api/files?sortField=name&desc=true&filter=/empty.pcap");
+cmp_ok ($json->{recordsTotal}, ">=", 108);
+cmp_ok ($json->{recordsFiltered}, "==", 0);
+
+# bad sortField
+$json = viewerGet("/api/files?sortField=__proto__");
+eq_or_diff($json, from_json('{"success":false,"text":"Invalid value for sortField"}'));

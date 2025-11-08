@@ -168,13 +168,21 @@ class HuntAPIs {
       }
     }
 
-    const message = `
+    if (hunt.notifier) {
+      const message = `
 *${hunt.name}* hunt job paused with error: *${error.value}*
 *${hunt.matchedSessions}* matched sessions out of *${hunt.searchedSessions}* searched sessions.
 ${Config.arkimeWebURL()}hunt
-    `;
+      `;
 
-    Notifier.issueAlert(hunt.notifier, message, continueProcess);
+      // Handle multiple notifiers (stored as comma-separated string) - send in parallel, fire and forget
+      const notifiers = hunt.notifier.split(',');
+      notifiers.forEach(notifierId => {
+        Notifier.issueAlert(notifierId, message, () => {});
+      });
+    }
+
+    continueProcess();
   }
 
   // --------------------------------------------------------------------------
@@ -273,7 +281,7 @@ ${Config.arkimeWebURL()}hunt
   // --------------------------------------------------------------------------
   static async #updateHuntStatus (req, res, huntStatus, successText, errorText) {
     try {
-      const { body: { _source: hunt } } = await Db.getHunt(req.params.id);
+      const { body: { _source: hunt } } = await Db.getHunt(req.params.id, req.query.cluster);
       // don't let a user play a hunt job if one is already running
       if (huntStatus === 'running' && internals.runningHuntJob) {
         return res.serverError(403, 'You cannot start a new hunt until the running job completes or is paused.');
@@ -288,7 +296,7 @@ ${Config.arkimeWebURL()}hunt
       if (hunt.status === 'running') { internals.runningHuntJob = undefined; }
 
       try {
-        await Db.updateHunt(req.params.id, { status: huntStatus });
+        await Db.updateHunt(req.params.id, { status: huntStatus }, req.query.cluster);
         res.send(JSON.stringify({ success: true, text: successText }));
         HuntAPIs.processHuntJobs();
       } catch (err) {
@@ -428,52 +436,59 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
         }
       }
 
-      async.forEachLimit(hits, 3, (hit, cb) => {
-        searchedSessions++;
-        const session = hit._source;
-        const sessionId = Db.session2Sid(hit);
-        const node = session.node;
+      // Gather all the hits by node
+      const hitsByNode = {};
+      hits.forEach((hit) => { (hitsByNode[hit._source.node] ??= []).push(hit); });
 
-        // There are no files, this is a fake session, don't hunt it
-        if (session.fileId === undefined || session.fileId.length === 0) {
-          return HuntAPIs.#updateHuntStats(hunt, huntId, session, searchedSessions, cb);
-        }
+      // Run all nodes in parallel, with 2 hits per node at once
+      async.forEach(hitsByNode, (nodehits, nodeCb) => {
+        async.forEachLimit(nodehits, 2, (hit, cb) => {
+          searchedSessions++;
+          const session = hit._source;
+          const sessionId = Db.session2Sid(hit);
+          const node = session.node;
 
-        SessionAPIs.isLocalView(node, () => {
-          HuntAPIs.#sessionHunt(sessionId, options, (err, matched) => {
-            if (err) {
-              return HuntAPIs.#pauseHuntJobWithError(huntId, hunt, { value: `Hunt error searching session (${sessionId}): ${err}` }, node);
-            }
-
-            if (matched) {
-              hunt.matchedSessions++;
-              HuntAPIs.#updateSessionWithHunt(session, sessionId, hunt, huntId);
-            }
-
-            HuntAPIs.#updateHuntStats(hunt, huntId, session, searchedSessions, cb);
-          });
-        }, () => { // Check Remotely
-          const huntRemotePath = `api/hunt/${node}/${huntId}/remote/${sessionId}`;
-
-          if (Config.debug > 1) {
-            console.log('HUNT - failed remote', huntRemotePath);
-          }
-          ViewerUtils.makeRequest(node, huntRemotePath, user, (err, response) => {
-            if (Config.debug > 1) {
-              console.log('HUNT - failed remote response', huntRemotePath, err, response);
-            }
-            if (err) {
-              return HuntAPIs.#continueHuntSkipSession(hunt, huntId, session, sessionId, searchedSessions, cb);
-            }
-            const json = JSON.parse(response);
-            if (json.error) {
-              console.log(`ERROR - runHuntJob - hunting on remote viewer: ${huntRemotePath}`, util.inspect(json.error, false, 50));
-              return HuntAPIs.#pauseHuntJobWithError(huntId, hunt, { value: `Error hunting on remote viewer: ${json.error}` }, node);
-            }
-            if (json.matched) { hunt.matchedSessions++; }
+          // There are no files, this is a fake session, don't hunt it
+          if (session.fileId === undefined || session.fileId.length === 0) {
             return HuntAPIs.#updateHuntStats(hunt, huntId, session, searchedSessions, cb);
+          }
+
+          SessionAPIs.isLocalView(node, () => {
+            HuntAPIs.#sessionHunt(sessionId, options, (err, matched) => {
+              if (err) {
+                return HuntAPIs.#pauseHuntJobWithError(huntId, hunt, { value: `Hunt error searching session (${sessionId}): ${err}` }, node);
+              }
+
+              if (matched) {
+                hunt.matchedSessions++;
+                HuntAPIs.#updateSessionWithHunt(session, sessionId, hunt, huntId);
+              }
+
+              HuntAPIs.#updateHuntStats(hunt, huntId, session, searchedSessions, cb);
+            });
+          }, () => { // Check Remotely
+            const huntRemotePath = `api/hunt/${node}/${huntId}/remote/${sessionId}`;
+
+            if (Config.debug > 1) {
+              console.log('HUNT - failed remote', huntRemotePath);
+            }
+            ViewerUtils.makeRequest(node, huntRemotePath, user, (err, response) => {
+              if (Config.debug > 1) {
+                console.log('HUNT - failed remote response', huntRemotePath, err, response);
+              }
+              if (err) {
+                return HuntAPIs.#continueHuntSkipSession(hunt, huntId, session, sessionId, searchedSessions, cb);
+              }
+              const json = JSON.parse(response);
+              if (json.error) {
+                console.log(`ERROR - runHuntJob - hunting on remote viewer: ${huntRemotePath}`, util.inspect(json.error, false, 50));
+                return HuntAPIs.#pauseHuntJobWithError(huntId, hunt, { value: `Error hunting on remote viewer: ${json.error}` }, node);
+              }
+              if (json.matched) { hunt.matchedSessions++; }
+              return HuntAPIs.#updateHuntStats(hunt, huntId, session, searchedSessions, cb);
+            });
           });
-        });
+        }, nodeCb);
       }, async (err) => { // done running this section of hunt job
         // Some kind of error, stop now
         if (err === 'paused' || err === 'undefined') {
@@ -534,10 +549,14 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
 ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.query.stopTime}&startTime=${hunt.query.startTime}
           `;
 
-          Notifier.issueAlert(hunt.notifier, message, continueProcess);
-        } else {
-          return continueProcess();
+          // Handle multiple notifiers (stored as comma-separated string) - send in parallel, fire and forget
+          const notifiers = hunt.notifier.split(',');
+          notifiers.forEach(notifierId => {
+            Notifier.issueAlert(notifierId, message, () => {});
+          });
         }
+
+        return continueProcess();
       });
     });
   }
@@ -625,7 +644,7 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
   // cb is optional and is called either when a job has been started or end of function
   static async processHuntJobs (cb) {
     if (!CronAPIs.isPrimaryViewer()) {
-      return;
+      return (cb ? cb() : null);
     }
 
     if (internals.runningHuntJob) {
@@ -743,7 +762,7 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
      hex - search for hex text.
      regex - search for text using <a href="https://github.com/google/re2/wiki/Syntax">safe regex</a>.
      hexregex - search for text using <a href="https://github.com/google/re2/wiki/Syntax">safe hex regex</a>.
-   * @param {string} notifier - The optional notifier name to fire when there is an error, or there are matches (every 10 minutes), or when the hunt is complete.
+   * @param {string} notifier - A comma separated list of notifier IDs to alert when there is an error or when the hunt is complete.
    * @param {string} users - The comma separated list of users to be added to the hunt so they can view the results.
    * @returns {boolean} success - Whether the creation of the hunt was successful.
    * @returns {Hunt} hunt - The newly created hunt object.
@@ -785,6 +804,10 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
       return res.serverError(403, 'Roles field must be an array of strings');
     }
 
+    if (req.body.notifier !== undefined && !ArkimeUtil.isStringArray(req.body.notifier)) {
+      return res.serverError(403, 'Notifier field must be an array of strings');
+    }
+
     if (req.body.users !== undefined && !ArkimeUtil.isString(req.body.users, 0)) {
       return res.serverError(403, 'Users field must be a string');
     }
@@ -802,7 +825,6 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
       src: req.body.src,
       dst: req.body.dst,
       totalSessions: req.body.totalSessions,
-      notifier: req.body.notifier,
       created: now,
       status: 'queued', // always starts as queued
       userId: req.user.userId,
@@ -818,9 +840,14 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
       roles: req.body.roles
     };
 
+    // Convert notifier array to comma-separated string for storage
+    if (ArkimeUtil.isStringArray(req.body.notifier)) {
+      hunt.notifier = req.body.notifier.join(',');
+    }
+
     async function doneCb (doneHunt, invalidUsers) {
       try {
-        const { body: result } = await Db.createHunt(doneHunt);
+        const { body: result } = await Db.createHunt(doneHunt, req.query.cluster);
         doneHunt.id = result._id;
         HuntAPIs.processHuntJobs(() => {
           const response = {
@@ -907,8 +934,8 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
     }
 
     Promise.all([
-      Db.searchHunt(query),
-      Db.countHunts(),
+      Db.searchHunt(query, req.query.cluster),
+      Db.countHunts(req.query.cluster),
       Db.getQueriesNode()
     ]).then(([{ body: { hits: hunts } }, { body: { count: total } }, nodeInfo]) => {
       let runningJob;
@@ -920,6 +947,11 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
         hunt.id = hit._id;
         hunt.index = hit._index;
         hunt.users = hunt.users || [];
+
+        // Convert comma-separated notifier string to array for client
+        if (ArkimeUtil.isString(hunt.notifier)) {
+          hunt.notifier = hunt.notifier.split(',');
+        }
 
         // clear out secret fields for users who don't have access to that hunt
         // if the user is not an admin and didn't create the hunt and isn't part of the user's list
@@ -968,7 +1000,7 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
    */
   static async deleteHunt (req, res) {
     try {
-      await Db.deleteHunt(req.params.id);
+      await Db.deleteHunt(req.params.id, req.query.cluster);
       return res.send(JSON.stringify({
         success: true,
         text: 'Deleted hunt successfully'
@@ -990,7 +1022,7 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
    */
   static async cancelHunt (req, res) {
     try {
-      const { body: { _source: hunt } } = await Db.getHunt(req.params.id);
+      const { body: { _source: hunt } } = await Db.getHunt(req.params.id, req.query.cluster);
 
       const error = { // save that the user canceled the hunt
         time: Math.floor(Date.now() / 1000),
@@ -1003,7 +1035,7 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
         hunt.errors.push(error);
       }
 
-      await Db.updateHunt(req.params.id, { status: 'finished', errors: hunt.errors });
+      await Db.updateHunt(req.params.id, { status: 'finished', errors: hunt.errors }, req.query.cluster);
       internals.runningHuntJob = undefined;
       HuntAPIs.processHuntJobs();
       return res.send(JSON.stringify({ success: true, text: 'Canceled hunt successfully' }));
@@ -1114,7 +1146,7 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
    */
   static async updateHunt (req, res) {
     try {
-      const { body: { _source: hunt } } = await Db.getHunt(req.params.id);
+      const { body: { _source: hunt } } = await Db.getHunt(req.params.id, req.query.cluster);
 
       // update properties
       if (ArkimeUtil.isString(req.body.description)) {
@@ -1126,7 +1158,7 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
       }
 
       try {
-        await Db.setHunt(req.params.id, hunt);
+        await Db.setHunt(req.params.id, hunt, req.query.cluster);
         res.send(JSON.stringify({
           success: true,
           text: 'Updated Hunt Succesfully!'
@@ -1158,7 +1190,7 @@ ${Config.arkimeWebURL()}sessions?expression=huntId==${huntId}&stopTime=${hunt.qu
     }
 
     try {
-      const { body: { _source: hunt } } = await Db.getHunt(req.params.id);
+      const { body: { _source: hunt } } = await Db.getHunt(req.params.id, req.query.cluster);
 
       const reqUsers = ArkimeUtil.commaOrNewlineStringToArray(req.body.users);
 

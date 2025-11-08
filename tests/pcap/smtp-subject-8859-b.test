@@ -25,6 +25,10 @@
             "dstOuiCnt" : 1,
             "dstPayload8" : "3232302078787878",
             "dstRIR" : "ARIN",
+            "dstTTL" : [
+               64
+            ],
+            "dstTTLCnt" : 1,
             "email" : {
                "ASN" : [
                   "---",
@@ -123,6 +127,7 @@
                ],
                "useragentCnt" : 1
             },
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1386358271061,
             "initRTT" : 0,
@@ -213,6 +218,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "45484c4f20787878",
+            "srcTTL" : [
+               123
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "smtp:statuscode:250"
             ],
@@ -227,6 +236,10 @@
                "syn" : 1,
                "syn-ack" : 1,
                "urg" : 0
+            },
+            "tcpseq" : {
+               "dst" : 0,
+               "src" : 3071856472
             },
             "totDataBytes" : 2151
          },

@@ -13,7 +13,7 @@ const cryptoLib = require('crypto');
 const ipaddr = require('ipaddr.js');
 const zlib = require('zlib');
 const async = require('async');
-const { decompressSync } = require('@xingrz/cppzst');
+const ArkimeUtil = require('../common/arkimeUtil');
 
 const internals = {
   pr2name: {
@@ -23,6 +23,7 @@ const internals = {
     17: 'udp',
     47: 'gre',
     50: 'esp',
+    51: 'ah',
     58: 'icmpv6',
     89: 'ospf',
     103: 'pim',
@@ -34,6 +35,7 @@ const internals = {
 class Pcap {
   #count = 0;
   #closing = false;
+  static #etherCBs = {};
 
   constructor (key) {
     this.key = key;
@@ -103,8 +105,7 @@ class Pcap {
     this.encoding = info.encoding ?? 'normal';
 
     if (info.dek) {
-      // eslint-disable-next-line n/no-deprecated-api
-      const decipher = cryptoLib.createDecipher('aes-192-cbc', info.kek);
+      const decipher = ArkimeUtil.createDecipherAES192NoIV(info.kek);
       this.encKey = Buffer.concat([decipher.update(Buffer.from(info.dek, 'hex')), decipher.final()]);
     }
 
@@ -136,11 +137,11 @@ class Pcap {
   openReadWrite (info) {
     if (info.uncompressedBits !== undefined) {
       this.corrupt = true;
-      throw new Error('Can\'t write gzip files');
+      throw new Error(`Can't write gzip files`);
     }
     if (info.encoding !== undefined) {
       this.corrupt = true;
-      throw new Error('Can\'t write encrypted files');
+      throw new Error(`Can't write encrypted files`);
     }
 
     if (this.fd) {
@@ -200,7 +201,14 @@ class Pcap {
 
     // pcap header is 24 but reading extra becaue of gzip/encryption
     this.headBuffer = Buffer.alloc(64);
-    fs.readSync(this.fd, this.headBuffer, 0, this.headBuffer.length, 0);
+    const len = fs.readSync(this.fd, this.headBuffer, 0, this.headBuffer.length, 0);
+
+    // Need to read in at least 24
+    if (len < 24) {
+      this.corrupt = true;
+      fs.close(this.fd, () => {});
+      throw new Error(`Missing PCAP header, only have ${len} bytes`);
+    }
 
     if (this.encoding === 'aes-256-ctr') {
       const decipher = this.createDecipher(0);
@@ -213,10 +221,16 @@ class Pcap {
     };
 
     if (this.uncompressedBits) {
-      if (this.compression === 'gzip') {
-        this.headBuffer = zlib.gunzipSync(this.headBuffer, { finishFlush: zlib.constants.Z_SYNC_FLUSH });
-      } else if (this.compression === 'zstd') {
-        this.headBuffer = decompressSync(this.headBuffer);
+      try {
+        if (this.compression === 'gzip') {
+          this.headBuffer = zlib.gunzipSync(this.headBuffer, { finishFlush: zlib.constants.Z_SYNC_FLUSH });
+        } else if (this.compression === 'zstd') {
+          this.headBuffer = zlib.zstdDecompressSync(this.headBuffer, { finishFlush: zlib.constants.Z_SYNC_FLUSH });
+        }
+      } catch (e) {
+        this.corrupt = true;
+        fs.close(this.fd, () => {});
+        throw new Error(`Missing PCAP header, couldn't uncompress`);
       }
     }
 
@@ -332,7 +346,7 @@ class Pcap {
             if (this.compression === 'gzip') {
               readBuffer = zlib.inflateRawSync(readBuffer, { finishFlush: zlib.constants.Z_SYNC_FLUSH });
             } else if (this.compression === 'zstd') {
-              readBuffer = decompressSync(readBuffer);
+              readBuffer = zlib.zstdDecompressSync(readBuffer, { finishFlush: zlib.constants.Z_SYNC_FLUSH });
             }
           } catch (e) {
             console.log('PCAP uncompress issue', this.key, pos, buffer.length, bytesRead, e);
@@ -354,7 +368,7 @@ class Pcap {
           if (hpLenArg === -1 && this.compression === 'zstd') {
             return this.readPacketInternal(posArg, this.uncompressedBitsSize * 2, cb);
           }
-          console.log(`Not enough data ${readBuffer.length} for header ${headerLen}`);
+          console.log(`Not enough data ${readBuffer.length} for header ${headerLen} in ${this.filename} - See https://arkime.com/faq#zero-byte-pcap-files`);
           return cb(undefined);
         }
 
@@ -615,6 +629,7 @@ class Pcap {
 
     // routing
     if (obj.gre.flags_version & 0x4000) {
+      // eslint-disable-next-line no-constant-condition
       while (1) {
         bpos += 3;
         const len = buffer.readUInt16BE(bpos);
@@ -629,16 +644,29 @@ class Pcap {
       bpos += 4;
     }
 
-    if (this.ethertyperun(obj.gre.type, buffer.slice(bpos), obj, pos + bpos)) { return; }
-
-    switch (obj.gre.type) {
-    case 0x88be:
-      this.ether(buffer.slice(bpos + 8), obj, pos + bpos + 8);
-      break;
-    default:
-      console.log('gre Unknown type', obj.gre.type);
+    if (obj.gre.type === 0x88be && (obj.gre.flags_version & 0x1000) === 0) {
+      this.ethertyperun(0, buffer.slice(bpos), obj, pos + bpos);
+    } else if (!this.ethertyperun(obj.gre.type, buffer.slice(bpos), obj, pos + bpos)) {
+      console.log('gre Unknown type', obj.gre.type, 'Please open a new protocol issue with sample pcap - https://github.com/arkime/arkime/issues/new/choose');
     }
   };
+
+  erspan (buffer, obj, pos) {
+    this.ether(buffer.slice(8), obj, pos + 8);
+  }
+
+  erspan3 (buffer, obj, pos) {
+    obj.erspan3 = {
+      subheader: buffer.readUInt16BE(10)
+    };
+
+    let bpos = 12;
+    if (obj.erspan3.subheader & 0x0001) {
+      bpos += 8;
+    }
+
+    this.ethertyperun(0, buffer.slice(bpos), obj, pos + bpos);
+  }
 
   ip4 (buffer, obj, pos) {
     obj.ip = {
@@ -680,7 +708,7 @@ class Pcap {
       break;
     default:
       obj.ip.data = buffer.slice(obj.ip.hl * 4, obj.ip.len);
-  // console.log("v4 Unknown ip.p", obj);
+  // console.log("v4 Unknown ip.p", obj, 'Please open a new protocol issue with sample pcap - https://github.com/arkime/arkime/issues/new/choose');
     }
   };
 
@@ -730,7 +758,7 @@ class Pcap {
         return;
       default:
         obj.ip.data = buffer.slice(offset, offset + obj.ip.len);
-        // console.log("v6 Unknown ip.p", obj);
+        // console.log("v6 Unknown ip.p", obj, 'Please open a new protocol issue with sample pcap - https://github.com/arkime/arkime/issues/new/choose');
         return;
       }
     }
@@ -750,7 +778,7 @@ class Pcap {
       this.ip6(buffer.slice(8, 8 + obj.pppoe.len), obj, pos + 8);
       return;
     default:
-      console.log('Unknown pppoe.type', obj);
+      console.log('Unknown pppoe.type', obj, 'Please open a new protocol issue with sample pcap - https://github.com/arkime/arkime/issues/new/choose');
     }
   };
 
@@ -767,7 +795,7 @@ class Pcap {
       this.ip6(buffer.slice(4), obj, pos + 4);
       return;
     default:
-      console.log('Unknown ppp.type', obj);
+      console.log('Unknown ppp.type', obj, 'Please open a new protocol issue with sample pcap - https://github.com/arkime/arkime/issues/new/choose');
     }
   };
 
@@ -792,8 +820,22 @@ class Pcap {
     }
   };
 
+  static setEtherCB (type, cb) {
+    Pcap.#etherCBs[type] = cb;
+  };
+
   ethertyperun (type, buffer, obj, pos) {
+    if (Pcap.#etherCBs[type]) {
+      return Pcap.#etherCBs[type](this, buffer, obj, pos);
+    }
+
     switch (type) {
+    case 0x88be: // ERSPAN I && II
+      this.erspan(buffer, obj, pos);
+      break;
+    case 0x22eb: // ERSPAN3 III
+      this.erspan3(buffer, obj, pos);
+      break;
     case 0x0800:
       this.ip4(buffer, obj, pos);
       break;
@@ -809,6 +851,7 @@ class Pcap {
     case 0x8847:
       this.mpls(buffer, obj, pos);
       break;
+    case 0:
     case 0x6558:
       this.ether(buffer, obj, pos);
       break;
@@ -946,7 +989,7 @@ class Pcap {
       this.ip4(buffer.slice(36, obj.pcap.incl_len + 20), obj, 36);
       break;
     default:
-      console.log('Unsupported pcap file', this.filename, 'link type', this.linkType);
+      console.log('Unsupported pcap file', this.filename, 'link type', this.linkType, 'Please open a new protocol issue with sample pcap - https://github.com/arkime/arkime/issues/new/choose');
       break;
     }
   };

@@ -23,7 +23,9 @@ LOCAL HASH_VAR(e_, fieldsByExp, ArkimeFieldInfo_t, 307);
 #define ARKIME_FIELD_SPECIAL_DROP_DST      -6
 #define ARKIME_FIELD_SPECIAL_DROP_SESSION  -7
 #define ARKIME_FIELD_SPECIAL_STOP_YARA     -8
-#define ARKIME_FIELD_SPECIAL_MIN           -8
+#define ARKIME_FIELD_SPECIAL_CLOSE_NOW     -9
+#define ARKIME_FIELD_SPECIAL_FLIP_SRC_DST  -10
+#define ARKIME_FIELD_SPECIAL_MIN           -10
 
 LOCAL va_list empty_va_list;
 
@@ -36,7 +38,7 @@ int16_t fieldOpsRemap[ARKIME_FIELDS_MAX][ARKIME_FIELDS_MAX];
 #define FIELD_MAX_JSON_SIZE 20000
 
 /******************************************************************************/
-LOCAL void arkime_field_by_exp_add_special(const char *exp, int pos)
+void arkime_field_by_exp_add_special(const char *exp, int pos)
 {
     ArkimeFieldInfo_t *info = ARKIME_TYPE_ALLOC0(ArkimeFieldInfo_t);
     info->expression = g_strdup(exp);
@@ -131,6 +133,14 @@ void arkime_field_define_json(const uint8_t *expression, int expression_len, con
             if (strncmp((char *)data + out[i + 2], "true", 4) == 0) {
                 disabled = 1;
             }
+        }
+    }
+
+    if (info->kind) {
+        if (strncmp(info->kind, "lo", 2) == 0) {
+            info->strKind = ARKIME_FIELD_STRKIND_LOWER;
+        } else if (strncmp(info->kind, "up", 2) == 0) {
+            info->strKind = ARKIME_FIELD_STRKIND_UPPER;
         }
     }
 
@@ -384,6 +394,12 @@ int arkime_field_define(const char *group, const char *kind, const char *express
             arkime_db_add_field(group, kind, expression, friendlyName, dbField, help, TRUE, args2);
             va_end(args2);
         }
+
+        if (strncmp(kind, "lo", 2) == 0) {
+            minfo->strKind = ARKIME_FIELD_STRKIND_LOWER;
+        } else if (strncmp(kind, "up", 2) == 0) {
+            minfo->strKind = ARKIME_FIELD_STRKIND_UPPER;
+        }
     } else {
         flags |= (minfo->flags & ARKIME_FIELD_FLAG_DISABLED);
 
@@ -562,7 +578,30 @@ int arkime_field_by_exp(const char *exp)
     LOGEXIT("ERROR - expr %s wasn't defined", exp);
 }
 /******************************************************************************/
-void arkime_field_truncated(ArkimeSession_t *session, const ArkimeFieldInfo_t *info)
+int arkime_field_by_exp_ignore_error(const char *exp)
+{
+    ArkimeFieldInfo_t *info = 0;
+    HASH_FIND(e_, fieldsByExp, exp, info);
+    if (info) {
+        if (info->pos != -1)
+            return info->pos;
+
+        // Need to change from field we just know about to real field
+        if (strcmp(info->kind, "integer") == 0 || strcmp(info->kind, "seconds") == 0) {
+            info->type = ARKIME_FIELD_TYPE_INT_HASH;
+        } else if (strcmp(info->kind, "ip") == 0) {
+            info->type = ARKIME_FIELD_TYPE_IP_GHASH;
+        } else {
+            info->type = ARKIME_FIELD_TYPE_STR_HASH;
+        }
+        info->pos = ARKIME_THREAD_INCROLD(config.maxDbField);
+        config.fields[info->pos] = info;
+        return info->pos;
+    }
+    return -1;
+}
+/******************************************************************************/
+LOCAL void arkime_field_truncated(ArkimeSession_t *session, const ArkimeFieldInfo_t *info)
 {
     char str[1024];
     snprintf(str, sizeof(str), "truncated-field-%s", info->dbField);
@@ -692,6 +731,24 @@ added:
         arkime_rules_run_field_set(session, pos, (const gpointer) string);
 
     return string;
+}
+/******************************************************************************/
+gboolean arkime_field_string_add_upper(int pos, ArkimeSession_t *session, const char *string, int len)
+{
+    if (len < 0)
+        len = strlen(string);
+
+    if (len > ARKIME_FIELD_MAX_ELEMENT_SIZE) {
+        len = ARKIME_FIELD_MAX_ELEMENT_SIZE;
+        arkime_field_truncated(session, config.fields[pos]);
+    }
+
+    char *upper = g_ascii_strdown(string, len);
+    if (!arkime_field_string_add(pos, session, upper, len, FALSE)) {
+        g_free(upper);
+        return FALSE;
+    }
+    return TRUE;
 }
 /******************************************************************************/
 gboolean arkime_field_string_add_lower(int pos, ArkimeSession_t *session, const char *string, int len)
@@ -849,6 +906,7 @@ gboolean arkime_field_int_add(int pos, ArkimeSession_t *session, int i)
             field->i = i;
             goto added;
         case ARKIME_FIELD_TYPE_INT_ARRAY:
+        case ARKIME_FIELD_TYPE_INT_ARRAY_UNIQUE:
             field->iarray = g_array_new(FALSE, FALSE, 4);
             g_array_append_val(field->iarray, i);
             goto added;
@@ -872,6 +930,13 @@ gboolean arkime_field_int_add(int pos, ArkimeSession_t *session, int i)
     switch (info->type) {
     case ARKIME_FIELD_TYPE_INT:
         field->i = i;
+        goto added;
+    case ARKIME_FIELD_TYPE_INT_ARRAY_UNIQUE:
+        for (guint j = 0; j < field->iarray->len; j++) {
+            if (i == g_array_index(field->iarray, int32_t, j))
+                return FALSE;
+        }
+        g_array_append_val(field->iarray, i);
         goto added;
     case ARKIME_FIELD_TYPE_INT_ARRAY:
         g_array_append_val(field->iarray, i);
@@ -1244,6 +1309,7 @@ void arkime_field_free(ArkimeSession_t *session)
             break;
         case ARKIME_FIELD_TYPE_INT:
             break;
+        case ARKIME_FIELD_TYPE_INT_ARRAY_UNIQUE:
         case ARKIME_FIELD_TYPE_INT_ARRAY:
             g_array_free(field->iarray, TRUE);
             break;
@@ -1456,6 +1522,12 @@ void arkime_field_ops_run_match(ArkimeSession_t *session, ArkimeFieldOps_t *ops,
                     session->stopYara = op->strLenOrInt;
                 }
                 break;
+            case ARKIME_FIELD_SPECIAL_CLOSE_NOW:
+                arkime_session_mark_for_close(session, session->ses);
+                break;
+            case ARKIME_FIELD_SPECIAL_FLIP_SRC_DST:
+                arkime_session_flip_src_dst(session);
+                break;
             }
             continue;
         }
@@ -1467,7 +1539,7 @@ void arkime_field_ops_run_match(ArkimeSession_t *session, ArkimeFieldOps_t *ops,
 
         // Internal Fields
         if (fieldPos >= config.minInternalField) {
-            // ALW TODO
+            LOG("WARNING - not allow to set %s", config.fields[fieldPos]->expression);
             continue;
         }
 
@@ -1482,6 +1554,7 @@ void arkime_field_ops_run_match(ArkimeSession_t *session, ArkimeFieldOps_t *ops,
         case ARKIME_FIELD_TYPE_INT_HASH:
         case ARKIME_FIELD_TYPE_INT_GHASH:
         case ARKIME_FIELD_TYPE_INT_ARRAY:
+        case ARKIME_FIELD_TYPE_INT_ARRAY_UNIQUE:
             arkime_field_int_add(fieldPos, session, op->strLenOrInt);
             break;
         case ARKIME_FIELD_TYPE_FLOAT_GHASH:
@@ -1524,6 +1597,36 @@ void arkime_field_ops_free(ArkimeFieldOps_t *ops)
     ops->ops = NULL;
     ops->size = 0;
     ops->num = 0;
+}
+/******************************************************************************/
+char *arkime_field_ops_parse(ArkimeFieldOps_t *ops, uint16_t flags, gchar **strs)
+{
+    char error[1000];
+    int  i;
+
+    for (i = 0; strs[i]; i++) { }
+    arkime_field_ops_init(ops, i, flags);
+
+    for (i = 0; strs[i]; i++) {
+        char *equal = strchr(strs[i], '=');
+        if (!equal) {
+            snprintf(error, sizeof(error), "Must be FieldExpr=value, missing equal '%s'", strs[i]);
+            return g_strdup(error);
+        }
+        int len = strlen(equal + 1);
+        if (!len) {
+            snprintf(error, sizeof(error), "Must be FieldExpr=value, empty value for '%s'", strs[i]);
+            return g_strdup(error);
+        }
+        *equal = 0;
+        int fieldPos = arkime_field_by_exp_ignore_error(strs[i]);
+        if (fieldPos == -1) {
+            snprintf(error, sizeof(error), "Must be FieldExpr=value, Unknown field expression '%s'", strs[i]);
+            return g_strdup(error);
+        }
+        arkime_field_ops_add(ops, fieldPos, equal + 1, len);
+    }
+    return NULL;
 }
 /******************************************************************************/
 void arkime_field_ops_init(ArkimeFieldOps_t *ops, int numOps, uint16_t flags)
@@ -1629,6 +1732,10 @@ void arkime_field_ops_add_match(ArkimeFieldOps_t *ops, int fieldPos, char *value
             if (op->strLenOrInt < 0) op->strLenOrInt = 0;
             op->str = 0;
             break;
+        case ARKIME_FIELD_SPECIAL_CLOSE_NOW:
+        case ARKIME_FIELD_SPECIAL_FLIP_SRC_DST:
+            op->strLenOrInt = 1;
+            break;
         default:
             LOG("WARNING - Unknown special field pos %d", fieldPos);
             break;
@@ -1665,8 +1772,23 @@ void arkime_field_ops_add_match(ArkimeFieldOps_t *ops, int fieldPos, char *value
             if (valuelen == -1)
                 valuelen = strlen(value);
             if (ops->flags & ARKIME_FIELD_OPS_FLAGS_COPY)
-                op->str = g_strndup(value, valuelen);
-            else
+                switch (config.fields[fieldPos]->strKind) {
+                case ARKIME_FIELD_STRKIND_NORMAL:
+                    op->str = g_strndup(value, valuelen);
+                    break;
+                case ARKIME_FIELD_STRKIND_LOWER:
+                    if (config.fields[fieldPos]->flags & ARKIME_FIELD_FLAG_FORCE_UTF8)
+                        op->str = g_utf8_strdown(value, valuelen);
+                    else
+                        op->str = g_ascii_strdown(value, valuelen);
+                    break;
+                case ARKIME_FIELD_STRKIND_UPPER:
+                    if (config.fields[fieldPos]->flags & ARKIME_FIELD_FLAG_FORCE_UTF8)
+                        op->str = g_utf8_strup(value, valuelen);
+                    else
+                        op->str = g_ascii_strup(value, valuelen);
+                    break;
+                } else
                 op->str = value;
             op->strLenOrInt = valuelen;
             break;
@@ -1684,7 +1806,7 @@ void arkime_field_ops_add(ArkimeFieldOps_t *ops, int fieldPos, char *value, int 
 }
 /******************************************************************************/
 // Parse oldExpr=matchExpr1=newExpr1;matchExpr2=newExpr2
-gboolean arkime_field_load_field_remap (gpointer UNUSED(user_data))
+LOCAL gboolean arkime_field_load_field_remap (gpointer UNUSED(user_data))
 {
     gsize keys_len;
     int   i;
@@ -1733,94 +1855,104 @@ gboolean arkime_field_load_field_remap (gpointer UNUSED(user_data))
     return G_SOURCE_REMOVE;
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_src_ip(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_src_ip(const ArkimeSession_t *session, int UNUSED(pos))
 {
-    return &session->addr1;
+    return (void *)&session->addr1;
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_src_port(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_src_port(const ArkimeSession_t *session, int UNUSED(pos))
 {
     return (void *)(long)session->port1;
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_dst_ip(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_dst_ip(const ArkimeSession_t *session, int UNUSED(pos))
 {
-    return &session->addr2;
+    return (void *)&session->addr2;
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_dst_port(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_dst_port(const ArkimeSession_t *session, int UNUSED(pos))
 {
     return (void *)(long)session->port2;
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_tcpflags_syn(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_tcpflags_syn(const ArkimeSession_t *session, int UNUSED(pos))
 {
-    return (void *)(long)session->tcpFlagCnt[ARKIME_TCPFLAG_SYN];
+    return (void *)(long)session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_SYN];
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_tcpflags_syn_ack(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_tcpflags_syn_ack(const ArkimeSession_t *session, int UNUSED(pos))
 {
-    return (void *)(long)session->tcpFlagCnt[ARKIME_TCPFLAG_SYN_ACK];
+    return (void *)(long)session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_SYN_ACK];
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_tcpflags_ack(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_tcpflags_ack(const ArkimeSession_t *session, int UNUSED(pos))
 {
-    return (void *)(long)session->tcpFlagCnt[ARKIME_TCPFLAG_ACK];
+    return (void *)(long)session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_ACK];
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_tcpflags_psh(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_tcpflags_psh(const ArkimeSession_t *session, int UNUSED(pos))
 {
-    return (void *)(long)session->tcpFlagCnt[ARKIME_TCPFLAG_PSH];
+    return (void *)(long)session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_PSH];
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_tcpflags_rst(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_tcpflags_rst(const ArkimeSession_t *session, int UNUSED(pos))
 {
-    return (void *)(long)session->tcpFlagCnt[ARKIME_TCPFLAG_RST];
+    return (void *)(long)session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_RST];
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_tcpflags_fin(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_tcpflags_fin(const ArkimeSession_t *session, int UNUSED(pos))
 {
-    return (void *)(long)session->tcpFlagCnt[ARKIME_TCPFLAG_FIN];
+    return (void *)(long)session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_FIN];
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_tcpflags_urg(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_tcpflags_urg(const ArkimeSession_t *session, int UNUSED(pos))
 {
-    return (void *)(long)session->tcpFlagCnt[ARKIME_TCPFLAG_URG];
+    return (void *)(long)session->tcpData.tcpFlagCnt[ARKIME_TCPFLAG_URG];
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_packets_src(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_tcp_synSet(const ArkimeSession_t *session, int UNUSED(pos))
+{
+    return (void *)(long)session->synSet;
+}
+/******************************************************************************/
+LOCAL void *arkime_field_getcb_packets_src(const ArkimeSession_t *session, int UNUSED(pos))
 {
     return (void *)(long)session->packets[0];
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_packets_dst(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_packets_dst(const ArkimeSession_t *session, int UNUSED(pos))
 {
     return (void *)(long)session->packets[1];
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_databytes_src(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_databytes_src(const ArkimeSession_t *session, int UNUSED(pos))
 {
     return (void *)(long)session->databytes[0];
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_databytes_dst(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_databytes_dst(const ArkimeSession_t *session, int UNUSED(pos))
 {
     return (void *)(long)session->databytes[1];
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_community_id(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_community_id(const ArkimeSession_t *session, int UNUSED(pos))
 {
 
-    if (session->ses == SESSION_ICMP) {
+    if (session->ses == SESSION_OTHER) {
         return NULL;
     }
-    char *communityId = arkime_db_community_id(session);
+    char *communityId;
+    if (session->ses == SESSION_ICMP) {
+        communityId = arkime_db_community_id_icmp(session);
+    } else {
+        communityId = arkime_db_community_id(session);
+    }
     arkime_free_later(communityId, g_free);
 
     return communityId;
 }
 /******************************************************************************/
-LOCAL void *arkime_field_getcb_dst_ip_port(ArkimeSession_t *session, int UNUSED(pos))
+LOCAL void *arkime_field_getcb_dst_ip_port(const ArkimeSession_t *session, int UNUSED(pos))
 {
     char *ipstr = g_malloc(INET6_ADDRSTRLEN + 10);
 
@@ -1854,6 +1986,8 @@ void arkime_field_init()
     arkime_field_by_exp_add_special("_dropByDst", ARKIME_FIELD_SPECIAL_DROP_DST);
     arkime_field_by_exp_add_special("_dropBySession", ARKIME_FIELD_SPECIAL_DROP_SESSION);
     arkime_field_by_exp_add_special("_dontCheckYara", ARKIME_FIELD_SPECIAL_STOP_YARA);
+    arkime_field_by_exp_add_special("_closeNow", ARKIME_FIELD_SPECIAL_CLOSE_NOW);
+    arkime_field_by_exp_add_special("_flipSrcDst", ARKIME_FIELD_SPECIAL_FLIP_SRC_DST);
 
     arkime_field_by_exp_add_internal("ip.src", ARKIME_FIELD_TYPE_IP, arkime_field_getcb_src_ip, NULL);
     arkime_field_by_exp_add_internal("port.src", ARKIME_FIELD_TYPE_INT, arkime_field_getcb_src_port, NULL);
@@ -1867,6 +2001,7 @@ void arkime_field_init()
     arkime_field_by_exp_add_internal("tcpflags.rst", ARKIME_FIELD_TYPE_INT, arkime_field_getcb_tcpflags_rst, NULL);
     arkime_field_by_exp_add_internal("tcpflags.fin", ARKIME_FIELD_TYPE_INT, arkime_field_getcb_tcpflags_fin, NULL);
     arkime_field_by_exp_add_internal("tcpflags.urg", ARKIME_FIELD_TYPE_INT, arkime_field_getcb_tcpflags_urg, NULL);
+    arkime_field_by_exp_add_internal("tcp.synSet", ARKIME_FIELD_TYPE_INT, arkime_field_getcb_tcp_synSet, NULL);
 
     arkime_field_by_exp_add_internal("packets.src", ARKIME_FIELD_TYPE_INT, arkime_field_getcb_packets_src, NULL);
     arkime_field_by_exp_add_internal("packets.dst", ARKIME_FIELD_TYPE_INT, arkime_field_getcb_packets_dst, NULL);

@@ -1,4 +1,3 @@
-import Vue from 'vue';
 import { v4 as uuidv4 } from 'uuid';
 
 import store from '../../store';
@@ -51,16 +50,14 @@ export default {
    * @param {object} self The vue component object
    * @returns {object} An object of result
    */
-  checkClusterSelection: function (queryCluster, availableClusterList, self, errorName) {
+  checkClusterSelection: function (queryCluster, availableClusterList, self, errorName, multiviewer) {
     const result = {
       valid: true,
       error: ''
     };
 
     // only validate in multiviewer mode
-    if (!Vue.prototype.$constants.MULTIVIEWER) {
-      return result;
-    }
+    if (!self.$constants.MULTIVIEWER) { return result; }
 
     if (!errorName) { errorName = 'error'; }
 
@@ -104,6 +101,12 @@ export default {
       return;
     }
 
+    // if visualizations are hidden on the sessions page, don't fetch facets
+    if (page === 'sessions' && localStorage.getItem('sessions-hide-viz') === 'true') {
+      query.facets = 0;
+      return;
+    }
+
     if (
       (localStorage['force-aggregations'] && localStorage['force-aggregations'] !== 'false') ||
       (sessionStorage['force-aggregations'] && sessionStorage['force-aggregations'] !== 'false')
@@ -121,7 +124,7 @@ export default {
     } else if (query.stopTime && query.startTime) {
       store.commit('setDisabledAggregations', true);
       const deltaTime = (query.stopTime - query.startTime) / 86400; // secs to days
-      /* eslint-disable no-undef */
+      // eslint-disable-next-line no-undef
       if (deltaTime >= (TURN_OFF_GRAPH_DAYS || 30)) {
         query.facets = 0;
         return;
@@ -129,5 +132,36 @@ export default {
     }
 
     store.commit('setDisabledAggregations', false);
+  },
+
+  setMapQuery (query) {
+    let outOfRange = false;
+
+    // hide the map if the time range is out of bounds
+    if (query.date === '-1') {
+      query.map = false;
+      outOfRange = true;
+    } else if (query.stopTime && query.startTime) {
+      const deltaTime = (query.stopTime - query.startTime) / 86400; // secs to days
+      // eslint-disable-next-line no-undef
+      if (deltaTime >= (TURN_OFF_GRAPH_DAYS || 30)) {
+        query.map = false;
+        outOfRange = true;
+      }
+    }
+
+    if ( // determine whether map is open on the sessions page, unless it's out of range
+      (!localStorage.getItem('sessions-hide-viz') || localStorage.getItem('sessions-hide-viz') === 'false') &&
+      localStorage.getItem('sessions-open-map') === 'true' &&
+      !outOfRange
+    ) {
+      query.map = true;
+      return;
+    }
+
+    // determine whether visualizations are being forced regardless of whether it's out of range
+    if (sessionStorage.getItem('force-aggregations') === 'true') {
+      query.map = true;
+    }
   }
 };
