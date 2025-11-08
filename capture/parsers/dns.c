@@ -4,6 +4,7 @@
  */
 #include "arkime.h"
 #include <arpa/inet.h>
+#include <sys/socket.h>
 
 //#define DNSDEBUG 1
 
@@ -172,10 +173,12 @@ LOCAL  char                  dnsOutputAnswers;
 LOCAL  int                   parseDNSRecordAll;
 
 // forward declarations
-void dns_save(BSB *jbsb, ArkimeFieldObject_t *object, struct arkime_session *session);
-void dns_free_object(ArkimeFieldObject_t *object);
-uint32_t dns_hash(const void *key);
-int dns_cmp(const void *keyv, const void *elementv);
+LOCAL void dns_save(BSB *jbsb, ArkimeFieldObject_t *object, struct arkime_session *session);
+LOCAL void dns_free_object(ArkimeFieldObject_t *object);
+LOCAL uint32_t dns_hash(const void *key);
+LOCAL int dns_cmp(const void *keyv, const void *elementv);
+
+LOCAL char                  *root = "<root>";
 
 /******************************************************************************/
 LOCAL void dns_free(ArkimeSession_t *UNUSED(session), void *uw)
@@ -488,7 +491,7 @@ LOCAL void dns_parser(ArkimeSession_t *session, int kind, const uint8_t *data, i
 
     const int qd_count = (data[4] << 8) | data[5];          /*number of question records*/
     const int an_prereqs_count = (data[6] << 8) | data[7];  /*number of answer or prerequisite records*/
-    const int ns_update_count = (data[8] << 8) | data[9];   /*number of authoritative or update recrods*/
+    const int ns_update_count = (data[8] << 8) | data[9];   /*number of authoritative or update records*/
     const int ar_count = (data[10] << 8) | data[11];        /*number of additional records*/
     const int resultRecordCount[3] = {an_prereqs_count, ns_update_count, ar_count};
 
@@ -526,7 +529,7 @@ LOCAL void dns_parser(ArkimeSession_t *session, int kind, const uint8_t *data, i
     }
 
     if (!namelen) {
-        key.query.hostname = (char *)"<root>";
+        key.query.hostname = root;
         namelen = 6;
     } else {
         key.query.hostname = g_hostname_to_unicode(name);
@@ -590,7 +593,7 @@ LOCAL void dns_parser(ArkimeSession_t *session, int kind, const uint8_t *data, i
 
         fobject->object = dns;
 
-        if (strcmp(key.query.hostname, "<root>") != 0) {
+        if (key.query.hostname != root) {
             int hostlen = strlen(dns->query.hostname);
             if (g_utf8_validate(dns->query.hostname, hostlen, NULL)) {
                 ArkimeString_t *element;
@@ -621,7 +624,7 @@ LOCAL void dns_parser(ArkimeSession_t *session, int kind, const uint8_t *data, i
         }
         arkime_field_object_add(dnsField, session, fobject, jsonLen);
     } else {
-        if (strcmp(key.query.hostname, "<root>") != 0)
+        if (key.query.hostname != root)
             g_free(key.query.hostname);
         dns = fobject->object;
     }
@@ -659,7 +662,7 @@ LOCAL void dns_parser(ArkimeSession_t *session, int kind, const uint8_t *data, i
             DNSAnswer_t *answer = ARKIME_TYPE_ALLOC0(DNSAnswer_t);
 
             if (!namelen) {
-                answer->name = (char *)"<root>";
+                answer->name = root;
                 namelen = 6;
             } else {
                 answer->name = g_hostname_to_unicode(name);
@@ -692,7 +695,7 @@ LOCAL void dns_parser(ArkimeSession_t *session, int kind, const uint8_t *data, i
             BSB_IMPORT_u16 (bsb, rdlength);
 
             if (BSB_REMAINING(bsb) < rdlength) {
-                if (answer->name && !(strcmp(answer->name, "<root>") == 0)) {
+                if (answer->name && answer->name != root) {
                     g_free(answer->name);
                 }
                 ARKIME_TYPE_FREE(DNSAnswer_t, answer);
@@ -948,7 +951,7 @@ LOCAL void dns_parser(ArkimeSession_t *session, int kind, const uint8_t *data, i
             continue;
 
 continueerr:
-            if (answer->name && !(strcmp(answer->name, "<root>") == 0)) {
+            if (answer->name && answer->name != root) {
                 g_free(answer->name);
             }
             ARKIME_TYPE_FREE(DNSAnswer_t, answer);
@@ -1068,7 +1071,7 @@ do { \
     BSB_EXPORT_cstr(*jbsb, "],"); \
 } while(0)
 /*******************************************************************************************/
-void dns_save_ip_ghash(BSB *jbsb, struct arkime_session *session, GHashTable *ghash, const char *key, int16_t keyLen)
+LOCAL void dns_save_ip_ghash(BSB *jbsb, struct arkime_session *session, GHashTable *ghash, const char *key, int16_t keyLen)
 {
 
     BSB_EXPORT_sprintf(*jbsb, "\"%sCnt\":%u,", key, g_hash_table_size(ghash));
@@ -1143,7 +1146,7 @@ void dns_save_ip_ghash(BSB *jbsb, struct arkime_session *session, GHashTable *gh
     g_hash_table_destroy(ghash);
 }
 /*******************************************************************************************/
-void dns_save(BSB *jbsb, ArkimeFieldObject_t *object, struct arkime_session *session)
+LOCAL void dns_save(BSB *jbsb, ArkimeFieldObject_t *object, struct arkime_session *session)
 {
     if (object->object == NULL) {
         return;
@@ -1165,8 +1168,9 @@ void dns_save(BSB *jbsb, ArkimeFieldObject_t *object, struct arkime_session *ses
 #endif
 
     BSB_EXPORT_sprintf(*jbsb, "\"opcode\":\"%s\",", dns->query.opcode);
-    BSB_EXPORT_sprintf(*jbsb, "\"queryHost\":\"%s\",", dns->query.hostname);
-    BSB_EXPORT_sprintf(*jbsb, "\"qc\":\"%s\",", dns->query.class);
+    BSB_EXPORT_sprintf(*jbsb, "\"queryHost\":");
+    arkime_db_js0n_str(jbsb, (uint8_t *)dns->query.hostname, TRUE);
+    BSB_EXPORT_sprintf(*jbsb, ",\"qc\":\"%s\",", dns->query.class);
     BSB_EXPORT_sprintf(*jbsb, "\"qt\":\"%s\",", dns->query.type);
 
     if (HASH_COUNT(s_, dns->hosts) > 0) {
@@ -1252,7 +1256,7 @@ void dns_save(BSB *jbsb, ArkimeFieldObject_t *object, struct arkime_session *ses
                     break;
                     case DNS_RR_TXT: {
                         BSB_EXPORT_cstr(*jbsb, "\"txt\":");
-                        arkime_db_js0n_str(jbsb, (uint8_t *)answer->txt, 1);
+                        arkime_db_js0n_str(jbsb, (uint8_t *)answer->txt, TRUE);
                         BSB_EXPORT_u08(*jbsb, ',');
                         g_free(answer->txt);
                     }
@@ -1322,7 +1326,7 @@ void dns_save(BSB *jbsb, ArkimeFieldObject_t *object, struct arkime_session *ses
                     break;
                     case DNS_RR_CAA: {
                         BSB_EXPORT_sprintf(*jbsb, "\"caa\":\"CAA %d %s ", answer->caa->flags, answer->caa->tag);
-                        arkime_db_js0n_str_unquoted(jbsb, (uint8_t *)answer->caa->value, strlen(answer->caa->value), 1);
+                        arkime_db_js0n_str_unquoted(jbsb, (uint8_t *)answer->caa->value, strlen(answer->caa->value), TRUE);
                         BSB_EXPORT_cstr(*jbsb, "\",");
                         g_free(answer->caa->tag);
                         g_free(answer->caa->value);
@@ -1337,10 +1341,16 @@ void dns_save(BSB *jbsb, ArkimeFieldObject_t *object, struct arkime_session *ses
                         BSB_EXPORT_sprintf(*jbsb, "\"type\":\"%s\",", answer->type);
                     BSB_EXPORT_sprintf(*jbsb, "\"ttl\":%u,", answer->ttl);
 
-                    BSB_EXPORT_sprintf(*jbsb, "\"name\":\"%s\",", answer->name);
 
-                    if (answer->name && !(strcmp(answer->name, "<root>") == 0)) {
-                        g_free(answer->name);
+                    if (answer->name) {
+                        if (answer->name != root) {
+                            BSB_EXPORT_sprintf(*jbsb, "\"name\":");
+                            arkime_db_js0n_str(jbsb, (uint8_t *)answer->name, TRUE);
+                            BSB_EXPORT_u08(*jbsb, ',');
+                            g_free(answer->name);
+                        } else {
+                            BSB_EXPORT_sprintf(*jbsb, "\"name\":\"%s\",", answer->name);
+                        }
                     }
 
                     ARKIME_TYPE_FREE(DNSAnswer_t, answer);
@@ -1364,7 +1374,7 @@ void dns_save(BSB *jbsb, ArkimeFieldObject_t *object, struct arkime_session *ses
 #endif
 }
 /*******************************************************************************************/
-void dns_free_object(ArkimeFieldObject_t *object)
+LOCAL void dns_free_object(ArkimeFieldObject_t *object)
 {
     if (object->object == NULL) {
         ARKIME_TYPE_FREE(ArkimeFieldObject_t, object);
@@ -1463,13 +1473,13 @@ void dns_free_object(ArkimeFieldObject_t *object)
         break;
         }
 
-        if (answer->name && !(strcmp(answer->name, "<root>") == 0)) {
+        if (answer->name && answer->name != root) {
             g_free(answer->name);
         }
         ARKIME_TYPE_FREE(DNSAnswer_t, answer);
     }
 
-    if (dns->query.hostname && !(strcmp(dns->query.hostname, "<root>") == 0)) {
+    if (dns->query.hostname && dns->query.hostname != root) {
         g_free(dns->query.hostname);
     }
 
@@ -1518,7 +1528,7 @@ void dns_free_object(ArkimeFieldObject_t *object)
 SUPPRESS_UNSIGNED_INTEGER_OVERFLOW
 SUPPRESS_SHIFT
 SUPPRESS_INT_CONVERSION
-uint32_t dns_hash(const void *keyv)
+LOCAL uint32_t dns_hash(const void *keyv)
 {
     DNS_t *key      = (DNS_t *)keyv;
 
@@ -1539,7 +1549,7 @@ uint32_t dns_hash(const void *keyv)
     return hash;
 }
 /*******************************************************************************************/
-int dns_cmp(const void *keyv, const void *elementv)
+LOCAL int dns_cmp(const void *keyv, const void *elementv)
 {
     DNS_t *keyDNS      = (DNS_t *)keyv;
     ArkimeFieldObject_t *element = (ArkimeFieldObject_t *)elementv;
@@ -1571,10 +1581,10 @@ LOCAL void *dns_getcb_host(const ArkimeSession_t *session, int UNUSED(pos))
 
     HASH_FORALL2(o_, *ohash, object) {
         const DNS_t *dns = (DNS_t *)object->object;
-        g_hash_table_insert(hash, dns->query.hostname, (void *)1LL);
+        g_hash_table_insert(hash, dns->query.hostname, GINT_TO_POINTER(1));
         ArkimeString_t *hstring;
         HASH_FORALL2(s_, dns->hosts, hstring) {
-            g_hash_table_insert(hash, hstring->str, (void *)1LL);
+            g_hash_table_insert(hash, hstring->str, GINT_TO_POINTER(1));
         }
     }
 
@@ -1597,7 +1607,7 @@ LOCAL void *dns_getcb_host_mailserver(const ArkimeSession_t *session, int UNUSED
         if (dns->mxHosts) {
             ArkimeString_t *hstring;
             HASH_FORALL2(s_, *(dns->mxHosts), hstring) {
-                g_hash_table_insert(hash, hstring->str, (void *)1LL);
+                g_hash_table_insert(hash, hstring->str, GINT_TO_POINTER(1));
             }
         }
     }
@@ -1621,7 +1631,7 @@ LOCAL void *dns_getcb_host_nameserver(const ArkimeSession_t *session, int UNUSED
         if (dns->nsHosts) {
             ArkimeString_t *hstring;
             HASH_FORALL2(s_, *(dns->nsHosts), hstring) {
-                g_hash_table_insert(hash, hstring->str, (void *)1LL);
+                g_hash_table_insert(hash, hstring->str, GINT_TO_POINTER(1));
             }
         }
     }
@@ -1645,7 +1655,7 @@ LOCAL void *dns_getcb_puny(const ArkimeSession_t *session, int UNUSED(pos))
         if (dns->punyHosts) {
             ArkimeString_t *hstring;
             HASH_FORALL2(s_, *(dns->punyHosts), hstring) {
-                g_hash_table_insert(hash, hstring->str, (void *)1LL);
+                g_hash_table_insert(hash, hstring->str, GINT_TO_POINTER(1));
             }
         }
     }
@@ -1667,7 +1677,7 @@ LOCAL void *dns_getcb_status(const ArkimeSession_t *session, int UNUSED(pos))
     HASH_FORALL2(o_, *ohash, object) {
         const DNS_t *dns = (DNS_t *)object->object;
         if (dns->rcode)
-            g_hash_table_insert(hash, dns->rcode, (void *)1LL);
+            g_hash_table_insert(hash, dns->rcode, GINT_TO_POINTER(1));
     }
 
     arkime_free_later(hash, (GDestroyNotify) g_hash_table_destroy);
@@ -1687,7 +1697,7 @@ LOCAL void *dns_getcb_opcode(const ArkimeSession_t *session, int UNUSED(pos))
     HASH_FORALL2(o_, *ohash, object) {
         const DNS_t *dns = (DNS_t *)object->object;
         if (dns->query.opcode)
-            g_hash_table_insert(hash, dns->query.opcode, (void *)1LL);
+            g_hash_table_insert(hash, dns->query.opcode, GINT_TO_POINTER(1));
     }
 
     arkime_free_later(hash, (GDestroyNotify) g_hash_table_destroy);
@@ -1707,7 +1717,7 @@ LOCAL void *dns_getcb_query_type(const ArkimeSession_t *session, int UNUSED(pos)
     HASH_FORALL2(o_, *ohash, object) {
         const DNS_t *dns = (DNS_t *)object->object;
         if (dns->query.type)
-            g_hash_table_insert(hash, dns->query.type, (void *)1LL);
+            g_hash_table_insert(hash, dns->query.type, GINT_TO_POINTER(1));
     }
 
     arkime_free_later(hash, (GDestroyNotify) g_hash_table_destroy);
@@ -1727,7 +1737,7 @@ LOCAL void *dns_getcb_query_class(const ArkimeSession_t *session, int UNUSED(pos
     HASH_FORALL2(o_, *ohash, object) {
         const DNS_t *dns = (DNS_t *)object->object;
         if (dns->query.class)
-            g_hash_table_insert(hash, dns->query.class, (void *)1LL);
+            g_hash_table_insert(hash, dns->query.class, GINT_TO_POINTER(1));
     }
 
     arkime_free_later(hash, (GDestroyNotify) g_hash_table_destroy);
@@ -1746,7 +1756,7 @@ LOCAL void *dns_getcb_query_host(const ArkimeSession_t *session, int UNUSED(pos)
 
     HASH_FORALL2(o_, *ohash, object) {
         const DNS_t *dns = (DNS_t *)object->object;
-        g_hash_table_insert(hash, dns->query.hostname, (void *)1LL);
+        g_hash_table_insert(hash, dns->query.hostname, GINT_TO_POINTER(1));
     }
 
     arkime_free_later(hash, (GDestroyNotify) g_hash_table_destroy);
@@ -1798,6 +1808,7 @@ void arkime_parser_init()
                         (char *)NULL);
 
     dnsHostField = arkime_field_by_exp_add_internal("dns.host", ARKIME_FIELD_TYPE_STR_GHASH, dns_getcb_host, NULL);
+    arkime_field_by_exp_add_special("host.dns", dnsHostField);
 
     arkime_field_define("dns", "lotextfield",
                         "host.dns.tokens", "Hostname Tokens", "dns.hostTokens",
@@ -1828,7 +1839,7 @@ void arkime_parser_init()
                         "host.dns.all", "All Host", "dnshostall",
                         "Shorthand for host.dns or host.dns.nameserver",
                         0, ARKIME_FIELD_FLAG_FAKE,
-                        "regex",  "^host\\\\.dns(?:(?!\\\\.(cnt|all)$).)*$",
+                        "regex",  "^host\\\\.dns(?:(?!\\\\.(cnt|all|tokens)$).)*$",
                         (char *)NULL);
 
     arkime_field_define("dns", "lotermfield",

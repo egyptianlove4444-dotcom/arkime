@@ -109,13 +109,19 @@ app.use(securityApp);
 ArkimeConfig.loaded(() => {
   // app security options -------------------------------------------------------
   const iframeOption = Config.get('iframe', 'deny');
-  if (iframeOption === 'sameorigin' || iframeOption === 'deny') {
+  switch (iframeOption) {
+  case 'allow':
+    break;
+  case 'sameorigin':
+  case 'deny':
     securityApp.use(helmet.frameguard({ action: iframeOption }));
-  } else {
+    break;
+  default:
     securityApp.use(helmet.frameguard({
       action: 'allow-from',
       domain: iframeOption
     }));
+    break;
   }
 
   securityApp.use(helmet.hidePoweredBy());
@@ -234,7 +240,7 @@ if (ArkimeConfig.regressionTests) {
 }
 
 // load balancer test - no authj ----------------------------------------------
-app.use('/_ns_/nstest.html', function (req, res) {
+app.use(['/_ns_/nstest.html', '/health'], function (req, res) {
   res.end();
 });
 
@@ -261,7 +267,7 @@ app.use(async (req, res, next) => {
     return next();
   }
   // For receiveSession there is no user (so no role check can be done) AND must be s2s
-  if (req.url.match(/^\/receiveSession/) || req.url.match(/^\/api\/sessions\/receive/)) {
+  if (req.url.match(/^\/receiveSession/i) || req.url.match(/^\/api\/sessions\/receive/i)) {
     if (req.headers['x-arkime-auth'] === undefined) {
       return res.status(401).send('receive session only allowed s2s');
     } else {
@@ -919,7 +925,6 @@ function expireDevice (nodes, dirs, minFreeSpaceG, nextCb) {
   }
   const query = {
     _source: ['num', 'name', 'first', 'size', 'node', 'indexFilename'],
-    from: '10',
     size: 500,
     query: {
       bool: {
@@ -947,7 +952,6 @@ function expireDevice (nodes, dirs, minFreeSpaceG, nextCb) {
     console.log('EXPIRE - device query', JSON.stringify(query, false, 2));
   }
 
-  // Keep at least 10 files
   Db.search('files', 'file', query, function (err, data) {
     if (err || data.error || !data.hits) {
       if (Config.debug > 0) {
@@ -959,13 +963,16 @@ function expireDevice (nodes, dirs, minFreeSpaceG, nextCb) {
     if (Config.debug === 1) {
       console.log('EXPIRE - device results hits:', data.hits.hits.length);
     } else if (Config.debug > 1) {
-      console.log('EXPIRE - device results', JSON.stringify(err, false, 2), JSON.stringify(data, false, 2));
+      console.log('EXPIRE - device results', data.hits.hits.length, JSON.stringify(err, false, 2), JSON.stringify(data, false, 2));
     }
 
     if (data.hits.total <= 10) {
       console.log(`EXPIRE WARNING - not deleting any files since ${data.hits.total} <= 10 minimum files per node. Your disk(s) may fill!!! See https://arkime.com/faq#pcap-deletion`);
       return nextCb();
     }
+
+    // Keep 10 most recent files by truncating array
+    data.hits.hits.length -= 10;
 
     async.forEachSeries(data.hits.hits, function (item, forNextCb) {
       const fields = item._source || item.fields;
@@ -982,7 +989,11 @@ function expireDevice (nodes, dirs, minFreeSpaceG, nextCb) {
       if (freeG < minFreeSpaceG) {
         console.log('Deleting', item);
         if (item.indexFilename) {
-          fs.unlink(item.indexFilename, () => {});
+          fs.unlink(item.indexFilename, (err) => {
+            if (err) {
+              console.log('EXPIRE - error deleting index file', item.indexFilename, err);
+            }
+          });
         }
         return Db.deleteFile(fields.node, item._id, fields.name, forNextCb);
       } else {
@@ -1043,7 +1054,7 @@ function expireCheckAll () {
     async.map(nodes, function (node, cb) {
       const pcapDirs = Config.getFullArray(node, 'pcapDir');
       if (!pcapDirs) {
-        return cb("ERROR - couldn't find pcapDir setting for node: " + node + '\nIf you have it set try running:\nnpm remove iniparser; npm cache clean; npm update iniparser');
+        return cb("ERROR - couldn't find pcapDir setting for node: " + node);
       }
       // Create a mapping from device id to stat information and all directories on that device
       pcapDirs.forEach(function (pcapDir) {
@@ -1907,7 +1918,7 @@ app.get( // reverse dns endpoint
 // uploads apis ---------------------------------------------------------------
 app.post(
   ['/api/upload'],
-  [checkCookieToken, multer({ dest: '/tmp', limits: internals.uploadLimits }).single('file')],
+  [checkCookieToken, logAction(), multer({ dest: '/tmp', limits: internals.uploadLimits }).single('file')],
   MiscAPIs.upload
 );
 
@@ -1968,11 +1979,11 @@ app.use(cspHeader, setCookie, (req, res) => {
     return res.status(403).send('Permission denied');
   }
 
-  if (req.path === '/users' && !req.user.hasRole('usersAdmin')) {
+  if (req.path.toLowerCase() === '/users' && !req.user.hasRole('usersAdmin')) {
     return res.status(403).send('Permission denied');
   }
 
-  if (req.path === '/settings' && req.user.isDemoMode()) {
+  if (req.path.toLowerCase() === '/settings' && req.user.isDemoMode()) {
     return res.status(403).send('Permission denied');
   }
 

@@ -33,6 +33,11 @@
                "",
                "TEST"
             ],
+            "dstTTL" : [
+               64
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1214308747487,
             "icmp" : {
@@ -112,6 +117,10 @@
                "",
                "TEST"
             ],
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "dstip",
                "srcip"

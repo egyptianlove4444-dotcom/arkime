@@ -106,7 +106,7 @@ class MiscAPIs {
    * @returns {number} recordsFiltered - The number of files returned in this result
    */
   static getFiles (req, res) {
-    const columns = ['num', 'node', 'name', 'locked', 'first', 'filesize', 'encoding', 'packetPosEncoding', 'packets', 'packetsSize', 'uncompressedBits', 'compression'];
+    const columns = ['num', 'node', 'name', 'locked', 'first', 'filesize', 'encoding', 'packetPosEncoding', 'packets', 'packetsSize', 'uncompressedBits', 'compression', 'firstTimestamp', 'lastTimestamp', 'startTimestamp', 'finishTimestamp'];
 
     const query = {
       _source: columns,
@@ -126,7 +126,7 @@ class MiscAPIs {
     ViewerUtils.addCluster(req.query.cluster, query);
 
     Promise.all([
-      Db.search('files', 'file', query),
+      Db.searchScroll('files', 'file', query),
       Db.numberOfDocuments('files', { cluster: req.query.cluster })
     ]).then(([files, total]) => {
       if (files.error) { throw files.error; }

@@ -509,6 +509,23 @@ SPDX-License-Identifier: Apache-2.0
               </b-button>
             </div>
           </div>
+
+          <!-- hide tags field -->
+          <div v-if="fields"
+            class="form-group row">
+            <label class="col-sm-3 col-form-label text-right font-weight-bold">
+              Hide Tags from Sessions
+            </label>
+            <div class="col-sm-6">
+              <input
+                type="text"
+                @change="update"
+                v-model="settings.hideTags"
+                class="form-control form-control-sm"
+                placeholder="Enter comma separated tags to hide in sessions table"
+              />
+            </div>
+          </div> <!-- /hide tags field -->
         </form>
 
         <!-- col configs settings -->
@@ -1885,7 +1902,6 @@ export default {
       // default to default theme if the user has not set a theme
       if (!this.settings.theme) { this.settings.theme = 'arkime-light-theme'; }
       if (this.settings.theme.startsWith('custom')) {
-        this.settings.theme = 'custom-theme';
         this.creatingCustom = true;
       }
       if (!this.settings.logo) {

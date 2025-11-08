@@ -213,7 +213,11 @@ LOCAL void scheme_s3_request(void *server, const ArkimeCredentials_t *creds, con
 
     char *headers[8];
     headers[0] = "Expect:";
-    headers[1] = "Content-Type:";
+    if (pathStyle) {
+        headers[1] = NULL;
+    } else {
+        headers[1] = "Content-Type:";
+    }
     headers[2] = NULL;
     headers[3] = NULL;
 
@@ -326,7 +330,7 @@ LOCAL int scheme_s3_load_dir(const char *dir, ArkimeSchemeFlags flags, ArkimeSch
         S3Item *item;
         DLL_POP_HEAD(item_, s3Items, item);
         ARKIME_UNLOCK(s3Items->lock);
-        arkime_reader_scheme_load(item->url, flags & ~ARKIME_SCHEME_FLAG_DIRHINT, actions);
+        arkime_reader_scheme_load(item->url, flags & (ArkimeSchemeFlags)(~ARKIME_SCHEME_FLAG_DIRHINT), actions);
         g_free(item->url);
         ARKIME_TYPE_FREE(S3Item, item);
     }
@@ -431,7 +435,7 @@ LOCAL int scheme_s3_load_full_dir(const char *dir, ArkimeSchemeFlags flags, Arki
         S3Item *item;
         DLL_POP_HEAD(item_, s3Items, item);
         ARKIME_UNLOCK(s3Items->lock);
-        arkime_reader_scheme_load(item->url, flags & ~ARKIME_SCHEME_FLAG_DIRHINT, actions);
+        arkime_reader_scheme_load(item->url, flags & (ArkimeSchemeFlags)(~ARKIME_SCHEME_FLAG_DIRHINT), actions);
         g_free(item->url);
         ARKIME_TYPE_FREE(S3Item, item);
     }
@@ -440,7 +444,7 @@ LOCAL int scheme_s3_load_full_dir(const char *dir, ArkimeSchemeFlags flags, Arki
 }
 /******************************************************************************/
 // s3://bucketname/path
-int scheme_s3_load(const char *uri, ArkimeSchemeFlags flags, ArkimeSchemeAction_t *actions)
+LOCAL int scheme_s3_load(const char *uri, ArkimeSchemeFlags flags, ArkimeSchemeAction_t *actions)
 {
     if (!inited)
         scheme_s3_init();
@@ -512,7 +516,7 @@ int scheme_s3_load(const char *uri, ArkimeSchemeFlags flags, ArkimeSchemeAction_
 /******************************************************************************/
 // s3http://hostport/bucketname/key
 // s3https://hostport/bucketname/key
-int scheme_s3_load_full(const char *uri, ArkimeSchemeFlags flags, ArkimeSchemeAction_t *actions)
+LOCAL int scheme_s3_load_full(const char *uri, ArkimeSchemeFlags flags, ArkimeSchemeAction_t *actions)
 {
     if (!inited)
         scheme_s3_init();

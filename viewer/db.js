@@ -16,16 +16,16 @@ const User = require('../common/user');
 const ArkimeUtil = require('../common/arkimeUtil');
 const LRU = require('lru-cache');
 
-const cache = new LRU({ max: 100, maxAge: 1000 * 10 });
+const cache10 = new LRU({ max: 1000, maxAge: 1000 * 10 });
+const cache60 = new LRU({ max: 1000, maxAge: 1000 * 60 });
 const Db = exports;
 
 const internals = {
   fileId2File: new Map(),
   fileName2File: new Map(),
-  arkimeNodeStatsCache: new LRU({ max: 1000, maxAge: 1000 * 60 }),
   shortcutsCache: new Map(),
   shortcutsCacheTS: new Map(),
-  sessionIndices: ['sessions2-*', 'sessions3-*'],
+  sessionIndices: ['sessions2-*', 'partial-sessions3-*', 'sessions3-*'],
   queryExtraIndicesRegex: [],
   remoteShortcutsIndex: undefined,
   localShortcutsIndex: undefined,
@@ -158,7 +158,8 @@ Db.initialize = async (info, cb) => {
 
   // build regular expressions for the user-specified extra query index patterns
   if (Array.isArray(info.queryExtraIndices)) {
-    internals.sessionIndices = [...new Set([...['sessions2-*', 'sessions3-*'], ...info.queryExtraIndices])];
+    internals.sessionIndices = [...new Set([...['sessions2-*', 'partial-sessions3-*', 'sessions3-*'], ...info.queryExtraIndices])];
+    delete internals.aliasesCache;
     for (const pattern in info.queryExtraIndices) {
       internals.queryExtraIndicesRegex.push(ArkimeUtil.wildcardToRegexp(info.queryExtraIndices[pattern]));
     }
@@ -169,8 +170,8 @@ Db.initialize = async (info, cb) => {
 
   // Update aliases cache so -shrink/-reindex works
   if (internals.nodeName !== undefined) {
-    Db.getAliasesCache(internals.sessionIndices);
-    setInterval(() => { Db.getAliasesCache(internals.sessionIndices); }, 2 * 60 * 1000);
+    Db.getAliasesCache();
+    setInterval(() => { Db.getAliasesCache(); }, 2 * 60 * 1000);
   }
 
   internals.localShortcutsIndex = fixIndex('lookups');
@@ -205,7 +206,7 @@ Db.initialize = async (info, cb) => {
 };
 
 /// ///////////////////////////////////////////////////////////////////////////////
-/// / Low level functions to convert from old style to new
+/// / Low level functions to convert from no prefix to having a prefix
 /// ///////////////////////////////////////////////////////////////////////////////
 function fixIndex (index) {
   if (index === undefined || index === '_all') { return index; }
@@ -216,6 +217,11 @@ function fixIndex (index) {
       return `sessions2*,${internals.prefix}sessions3*`;
     }
     return `${internals.prefix}sessions2*,${internals.prefix}sessions3*`;
+  }
+
+  // Turn into array if comma separated
+  if (index.includes(',')) {
+    index = index.split(',');
   }
 
   if (Array.isArray(index)) {
@@ -229,20 +235,32 @@ function fixIndex (index) {
   }
 
   // Don't fix extra user-specified indexes from the queryExtraIndices
-  if (!internals.queryExtraIndicesRegex.some(re => re.test(index))) {
-    // If prefix isn't there, add it. But don't add it for sessions2 unless really set.
-    if (!index.startsWith(internals.prefix) && (!index.startsWith('sessions2') || internals.prefix !== 'arkime_')) {
-      index = internals.prefix + index;
-    }
+  if (internals.queryExtraIndicesRegex.some(re => re.test(index))) {
+    return index;
+  }
 
-    if (internals.aliasesCache && !internals.aliasesCache[index]) {
-      if (internals.aliasesCache[index + '-shrink']) {
-        // If the index doesn't exist but the shrink version does exist, add -shrink
-        index += '-shrink';
-      } else if (internals.aliasesCache[index + '-reindex']) {
-        // If the index doesn't exist but the reindex version does exist, add -reindex
-        index += '-reindex';
-      }
+  // Make sure partial-${prefix}index format
+  if (index.startsWith('partial-')) {
+    if (!index.substring(8).startsWith(internals.prefix)) {
+      index = 'partial-' + internals.prefix + index.substring(8);
+    }
+    return index;
+  }
+
+  // If prefix isn't there, add it. But don't add it for sessions2 unless really set.
+  if (!index.startsWith(internals.prefix) && (!index.startsWith('sessions2') || internals.prefix !== 'arkime_')) {
+    index = internals.prefix + index;
+  }
+
+  if (internals.aliasesCache && !internals.aliasesCache[index]) {
+    if (internals.aliasesCache['partial-' + index]) {
+      index = 'partial-' + index;
+    } else if (internals.aliasesCache[index + '-shrink']) {
+      // If the index doesn't exist but the shrink version does exist, add -shrink
+      index += '-shrink';
+    } else if (internals.aliasesCache[index + '-reindex']) {
+      // If the index doesn't exist but the reindex version does exist, add -reindex
+      index += '-reindex';
     }
   }
 
@@ -252,7 +270,9 @@ Db.fixIndex = fixIndex;
 
 Db.merge = (to, from) => {
   for (const key in from) {
-    to[key] = from[key];
+    if (Object.prototype.hasOwnProperty.call(from, key)) {
+      to[key] = from[key];
+    }
   }
 };
 
@@ -341,13 +361,18 @@ const dateFields = {
 function fixSessionFields (fields, unflatten) {
   if (!fields) { return; }
   if (unflatten) {
-    fields.source = { as: {}, geo: {} };
-    fields.destination = { as: {}, geo: {} };
-    fields.client = {};
-    fields.server = {};
+    fields.source = Object.create(null);
+    fields.source.as = Object.create(null);
+    fields.source.geo = Object.create(null);
+    fields.destination = Object.create(null);
+    fields.destination.as = Object.create(null);
+    fields.destination.geo = Object.create(null);
+    fields.client = Object.create(null);
+    fields.server = Object.create(null);
   }
   for (const f in fields) {
     const path = f.split('.');
+    if (ArkimeUtil.isPP(path)) { continue; }
     let key = fields;
 
     // No dot in name, maybe no change
@@ -384,7 +409,7 @@ function fixSessionFields (fields, unflatten) {
         key[path[i]] = value;
         break;
       } else if (key[path[i]] === undefined) {
-        key[path[i]] = {};
+        key[path[i]] = Object.create(null);
       }
       key = key[path[i]];
     }
@@ -492,7 +517,7 @@ Db.getSession = async (id, options, cb) => {
   const query = { query: { ids: { values: [Db.sid2Id(id)] } }, _source: options._source, fields: options.fields };
 
   const unflatten = options?.arkime_unflatten ?? true;
-  const params = { };
+  const params = Object.create(null);
   Db.merge(params, options);
   delete params._source;
   delete params.fields;
@@ -500,6 +525,7 @@ Db.getSession = async (id, options, cb) => {
   delete params.final;
 
   const index = Db.sid2Index(id, { multiple: true });
+
   Db.search(index, '_doc', query, params, async (err, results) => {
     if (internals.debug > 2) {
       console.log('GETSESSION - search results', err, JSON.stringify(results, false, 2));
@@ -617,7 +643,7 @@ Db.searchScroll = function (index, type, query, options, cb) {
   // Convert promise to cb by calling ourselves
   if (!cb) {
     return new Promise((resolve, reject) => {
-      Db.searchScroll(index, query, type, options, (err, data) => {
+      Db.searchScroll(index, type, query, options, (err, data) => {
         if (err) {
           reject(err);
         } else {
@@ -781,10 +807,12 @@ Db.getAliases = async (index) => {
   return internals.client7.indices.getAlias({ index: fixIndex(index) });
 };
 
-Db.getAliasesCache = async (index) => {
+Db.getAliasesCache = async () => {
   if (internals.aliasesCache && internals.aliasesCacheTimeStamp > Date.now() - 5000) {
     return internals.aliasesCache;
   }
+
+  const index = internals.sessionIndices;
 
   try {
     const { body: aliases } = await Db.getAliases(index);
@@ -815,7 +843,7 @@ Db.indices = async (index, cluster) => {
 
 Db.indicesSettings = async (index, cluster) => {
   return internals.client7.indices.getSettings({
-    flatSettings: true,
+    flat_settings: true,
     index: fixIndex(index),
     cluster
   });
@@ -829,7 +857,7 @@ Db.setIndexSettings = async (index, options) => {
         index,
         body: options.body,
         timeout: '10m',
-        masterTimeout: '10m',
+        master_timeout: '10m',
         cluster: options.cluster
       });
     } catch (err) {
@@ -841,12 +869,13 @@ Db.setIndexSettings = async (index, options) => {
       index,
       body: options.body,
       timeout: '10m',
-      masterTimeout: '10m',
+      master_timeout: '10m',
       cluster: options.cluster
     });
     return response;
   } catch (err) {
-    cache.reset();
+    cache10.reset();
+    cache60.reset();
     throw err;
   }
 };
@@ -886,9 +915,21 @@ Db.getClusterSettings = async (options) => {
   return internals.client7.cluster.getSettings(options);
 };
 
+Db.getClusterSettingsCache = async (options) => {
+  const key = 'clusterSettings-' + JSON.stringify(options);
+  let value = cache60.get(key);
+  if (value) {
+    return value;
+  }
+  value = internals.client7.cluster.getSettings(options);
+  cache60.set(key, value);
+  return value;
+};
+
 Db.putClusterSettings = async (options) => {
+  cache60.keys().filter((v) => v.startsWith('clusterSettings-')).every((v) => cache60.del(v));
   options.timeout = '10m';
-  options.masterTimeout = '10m';
+  options.master_timeout = '10m';
   return internals.client7.cluster.putSettings(options);
 };
 
@@ -952,8 +993,8 @@ Db.close = async () => {
 Db.reroute = async (cluster, commands) => {
   return internals.client7.cluster.reroute({
     timeout: '10m',
-    masterTimeout: '10m',
-    retryFailed: true,
+    master_timeout: '10m',
+    retry_failed: true,
     cluster,
     body: { commands }
   });
@@ -1099,12 +1140,12 @@ Db.removeHuntFromSession = function (index, id, huntId, huntName, cb) {
 Db.flushCache = function () {
   internals.fileId2File.clear();
   internals.fileName2File.clear();
-  internals.arkimeNodeStatsCache.reset();
   User.flushCache();
   internals.shortcutsCache.clear();
   delete internals.aliasesCache;
   Db.getAliasesCache();
-  cache.reset();
+  cache10.reset();
+  cache60.reset();
 };
 
 function twoDigitString (value) {
@@ -1133,7 +1174,7 @@ Db.searchHistory = async (query) => {
 Db.countHistory = async (cluster) => {
   return internals.client7.count({
     index: internals.prefix === 'arkime_' ? 'history_v1-*,arkime_history_v1-*' : fixIndex('history_v1-*'),
-    ignoreUnavailable: true,
+    ignore_unavailable: true,
     cluster
   });
 };
@@ -1421,19 +1462,20 @@ Db.arkimeNodeStats = async (nodeName) => {
 };
 
 Db.arkimeNodeStatsCache = async function (nodeName) {
-  let stat = internals.arkimeNodeStatsCache.get(nodeName);
+  const key = `arkimeNodeStats-${nodeName}`;
+  let stat = cache60.get(nodeName);
   if (stat) {
     return stat;
   }
 
   stat = Db.arkimeNodeStats(nodeName);
-  internals.arkimeNodeStatsCache.set(nodeName, stat);
+  cache60.set(key, stat);
   return stat;
 };
 
 Db.healthCache = async (cluster) => {
   const key = `health-${cluster}`;
-  const value = cache.get(key);
+  const value = cache10.get(key);
 
   if (value !== undefined) {
     return value;
@@ -1448,39 +1490,39 @@ Db.healthCache = async (cluster) => {
   if (cluster === undefined) {
     health.molochDbVersion = doc[fixIndex('sessions3_template')].mappings._meta.molochDbVersion;
   }
-  cache.set(key, health);
+  cache10.set(key, health);
   return health;
 };
 
 Db.nodesInfoCache = async (cluster) => {
   const key = `nodesInfoCache-${cluster}`;
-  const value = cache.get(key);
+  const value = cache10.get(key);
 
   if (value !== undefined) {
     return value;
   }
 
   const { body: data } = await Db.nodesInfo({ cluster });
-  cache.set(key, data);
+  cache10.set(key, data);
   return data;
 };
 
 Db.masterCache = async (cluster) => {
   const key = `master-${cluster}`;
-  const value = cache.get(key);
+  const value = cache10.get(key);
 
   if (value !== undefined) {
     return value;
   }
 
   const { body: data } = await Db.master();
-  cache.set(key, data);
+  cache10.set(key, data);
   return data;
 };
 
 Db.nodesStatsCache = async (cluster) => {
   const key = `nodesStats-${cluster}`;
-  const value = cache.get(key);
+  const value = cache10.get(key);
 
   if (value !== undefined) {
     return value;
@@ -1490,33 +1532,33 @@ Db.nodesStatsCache = async (cluster) => {
     metric: 'jvm,process,fs,os,indices,thread_pool',
     cluster
   });
-  cache.set(key, data);
+  cache10.set(key, data);
   return data;
 };
 
 Db.indicesCache = async (cluster) => {
   const key = `indices-${cluster}`;
-  const value = cache.get(key);
+  const value = cache10.get(key);
 
   if (value !== undefined) {
     return value;
   }
 
   const { body: indices } = await Db.indices('_all', cluster);
-  cache.set(key, indices);
+  cache10.set(key, indices);
   return indices;
 };
 
 Db.indicesSettingsCache = async (cluster) => {
   const key = `indicesSettings-${cluster}`;
-  const value = cache.get(key);
+  const value = cache10.get(key);
 
   if (value !== undefined) {
     return value;
   }
 
   const { body: indicesSettings } = await Db.indicesSettings('_all', cluster);
-  cache.set(key, indicesSettings);
+  cache10.set(key, indicesSettings);
   return indicesSettings;
 };
 
@@ -1595,7 +1637,7 @@ Db.getSequenceNumber = async (sName) => {
 Db.numberOfDocuments = async (index, options) => {
   // count interface is slow for larget data sets, don't use for sessions unless multiES
   if (index !== 'sessions2-*' || internals.multiES) {
-    const params = { index: fixIndex(index), ignoreUnavailable: true };
+    const params = { index: fixIndex(index), ignore_unavailable: true };
     Db.merge(params, options);
     const { body: total } = await internals.client7.count(params);
     return { count: total.count };
@@ -1668,7 +1710,10 @@ Db.isLocalView = async function (node, yesCB, noCB) {
 };
 
 Db.deleteFile = function (node, id, path, cb) {
-  fs.unlink(path, () => {
+  fs.unlink(path, (err) => {
+    if (err) {
+      console.log('EXPIRE - error deleting file', node, id, path, err);
+    }
     Db.deleteDocument('files', 'file', id);
     cb();
   });
@@ -1683,11 +1728,17 @@ Db.session2Sid = function (item) {
   } else if (item._id.length < 31) {
     // sessions2 didn't have new arkime_ prefix
     if (ver === '2@' && internals.prefix === 'arkime_') {
+      // tests_sessions2-191021 191021-abcd => 3@191021:191021-abcd
       return ver + item._index.substring(10) + ':' + item._id;
+    } else if (item._index.startsWith('partial-')) {
+      // partial-tests_sessions3-191021 191021-abcd => 3@191021:191021-abcd
+      return ver + item._index.substring(internals.prefix.length + 18) + ':' + item._id;
     } else {
+      // tests_sessions3-191021 191021-abcd => 3@191021:191021-abcd
       return ver + item._index.substring(internals.prefix.length + 10) + ':' + item._id;
     }
   } else {
+    // tests_sessions3-191021 191021-abcdefghijklmnopqrstuvwxyz => 3@191021-abcdefghijklmnopqrstuvwxyz
     return ver + item._id;
   }
 };
@@ -1713,7 +1764,12 @@ Db.sid2Index = function (id, options) {
       // ver is x@, which indicates user-specified queryExtraIndices,
       //   so the id will be formatted x@_index:_id
       // console.log(`Db.sid2Index: ${id.substr(2, colon - 2)}`);
-      return id.substr(2, colon - 2);
+      const index = id.substr(2, colon - 2);
+      if (internals.queryExtraIndicesRegex.some(re => re.test(index))) {
+        return index;
+      } else {
+        throw new Error('Db.sid2Index: ERROR - queryExtraIndices regex did not match');
+      }
     } else {
       if (colon > 0) {
         return 'sessions' + id[0] + '-' + id.substr(2, colon - 2);
@@ -1738,7 +1794,7 @@ Db.sid2Index = function (id, options) {
   }
 
   const fs3 = fixIndex(s3);
-  if (internals.aliasesCache[fs3] || internals.aliasesCache[fs3 + '-reindex'] || internals.aliasesCache[fs3 + '-shrink']) {
+  if (internals.aliasesCache[fs3] || internals.aliasesCache['partial-' + fs3] || internals.aliasesCache[fs3 + '-reindex'] || internals.aliasesCache[fs3 + '-shrink']) {
     results.push(fs3);
   }
 
@@ -1762,7 +1818,7 @@ Db.getSessionIndices = function (excludeExtra) {
 
 Db.getIndices = async (startTime, stopTime, bounding, rotateIndex, extraIndices) => {
   try {
-    const aliases = await Db.getAliasesCache(internals.sessionIndices);
+    const aliases = await Db.getAliasesCache();
     const indices = [];
 
     // Guess how long hour indices we find are
@@ -1780,6 +1836,9 @@ Db.getIndices = async (startTime, stopTime, bounding, rotateIndex, extraIndices)
     for (const iname in aliases) {
       let index = iname;
       let isQueryExtraIndex = false;
+      if (index.startsWith('partial-')) {
+        index = index.substring(8);
+      }
       if (index.endsWith('-shrink')) {
         index = index.substring(0, index.length - 7);
       }
@@ -1950,7 +2009,7 @@ Db.putTemplate = async (templateName, body, cluster) => {
 };
 
 Db.setQueriesNode = async (node, force) => {
-  const namePid = `node-${process.pid}`;
+  const namePid = `${node}-${process.pid}`;
 
   // force is true we just rewrite the primary-viewer entry everytime
   if (force) {

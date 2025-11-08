@@ -261,6 +261,11 @@
             ],
             "dstOuiCnt" : 1,
             "dstPayload8" : "01545e6381800001",
+            "dstTTL" : [
+               60
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1385482078892,
             "initRTT" : 0,
@@ -324,6 +329,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "001c5e6301000001",
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "tcpflags" : {
                "ack" : 4,
                "dstZero" : 0,
@@ -334,6 +343,10 @@
                "syn" : 1,
                "syn-ack" : 1,
                "urg" : 0
+            },
+            "tcpseq" : {
+               "dst" : 0,
+               "src" : 147461651
             },
             "totDataBytes" : 372
          },
@@ -538,6 +551,11 @@
             ],
             "dstOuiCnt" : 1,
             "dstPayload8" : "0100e2ec81800001",
+            "dstTTL" : [
+               60
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1385482080084,
             "initRTT" : 0,
@@ -601,6 +619,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "0019e2ec01000001",
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "tcpflags" : {
                "ack" : 4,
                "dstZero" : 0,
@@ -611,6 +633,10 @@
                "syn" : 1,
                "syn-ack" : 1,
                "urg" : 0
+            },
+            "tcpseq" : {
+               "dst" : 0,
+               "src" : 138184354
             },
             "totDataBytes" : 285
          },

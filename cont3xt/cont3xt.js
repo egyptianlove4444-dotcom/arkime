@@ -359,7 +359,7 @@ app.use('/app.js.map', express.static(
 ), ArkimeUtil.missingResource);
 // vue index page
 app.use(cspHeader, setCookie, (req, res, next) => {
-  if (req.path === '/users' && !req.user.hasRole('usersAdmin')) {
+  if (req.path.toLowerCase() === '/users' && !req.user.hasRole('usersAdmin')) {
     return res.status(403).send('Permission denied');
   }
 
@@ -410,7 +410,13 @@ function processArgs (argv) {
         console.log('Missing equal sign in', process.argv[i]);
         process.exit(1);
       }
-      ArkimeConfig.setOverride(process.argv[i].slice(0, equal), process.argv[i].slice(equal + 1));
+      const key = process.argv[i].slice(0, equal);
+      const value = process.argv[i].slice(equal + 1);
+      if (key.includes('.')) {
+        ArkimeConfig.setOverride(key, value);
+      } else {
+        ArkimeConfig.setOverride('cont3xt.' + key, value);
+      }
     } else if (argv[i] === '--help') {
       console.log('cont3xt.js [<options>]');
       console.log('');

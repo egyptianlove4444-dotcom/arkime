@@ -105,6 +105,7 @@ struct arkimehttpserver_t {
     char                     compress;
     char                     printErrors;
     char                     insecure;
+    char                     dontFreeResponse;
     uint16_t                 maxConns;
     uint16_t                 maxOutstandingRequests;
     uint16_t                 outstanding;
@@ -444,7 +445,8 @@ LOCAL void arkime_http_curlm_check_multi_info(ArkimeHttpServer_t *server)
                     request->func(responseCode, request->dataIn, request->used, request->uw);
                 }
                 if (request->dataIn) {
-                    free(request->dataIn);
+                    if (!server->dontFreeResponse)
+                        free(request->dataIn);
                     request->dataIn = 0;
                 }
                 if (request->dataOut) {
@@ -535,7 +537,7 @@ LOCAL int arkime_http_curlm_timeout_callback(CURLM *UNUSED(multi), long timeout_
 }
 
 /******************************************************************************/
-size_t arkime_http_curlm_header_function(char *buffer, size_t size, size_t nitems, void *requestP)
+LOCAL size_t arkime_http_curlm_header_function(char *buffer, size_t size, size_t nitems, void *requestP)
 {
     ArkimeHttpRequest_t *request = requestP;
     int sz = size * nitems;
@@ -632,7 +634,7 @@ LOCAL gboolean arkime_http_curl_watch_open_callback(int fd, GIOCondition conditi
     return CURLE_OK;
 }
 /******************************************************************************/
-curl_socket_t arkime_http_curl_open_callback(void *snameV, curlsocktype UNUSED(purpose), struct curl_sockaddr *addr)
+LOCAL curl_socket_t arkime_http_curl_open_callback(void *snameV, curlsocktype UNUSED(purpose), struct curl_sockaddr *addr)
 {
     ArkimeHttpServerName_t    *sname = snameV;
     ArkimeHttpServer_t        *server = sname->server;
@@ -644,7 +646,7 @@ curl_socket_t arkime_http_curl_open_callback(void *snameV, curlsocktype UNUSED(p
     return fd;
 }
 /******************************************************************************/
-int arkime_http_curl_close_callback(void *snameV, curl_socket_t fd)
+LOCAL int arkime_http_curl_close_callback(void *snameV, curl_socket_t fd)
 {
     ArkimeHttpServerName_t    *sname = snameV;
     ArkimeHttpServer_t        *server = sname->server;
@@ -776,10 +778,10 @@ gboolean arkime_http_schedule2(void *serverV, const char *method, const char *ke
     if (!config.quitting && server->outstanding > server->maxOutstandingRequests) {
         int drop = FALSE;
         if (priority == ARKIME_HTTP_PRIORITY_DROPABLE) {
-            LOG("ERROR - Dropping request (https://arkime.com/faq#error-dropping-request) %.*s of size %u queue %u is too big", key_len, key, data_len, server->outstanding);
+            LOG("WARNING - Dropping request to overwhelmed server, please see https://arkime.com/faq#error-dropping-request for help! size: %u queue: %u path: %.*s", data_len, server->outstanding, key_len, key);
             drop = TRUE;
         } else if (priority == ARKIME_HTTP_PRIORITY_NORMAL && server->outstanding > server->maxOutstandingRequests * 2) {
-            LOG("ERROR - Dropping request (https://arkime.com/faq#error-dropping-request) %.*s of size %u queue %u is WAY too big", key_len, key, data_len, server->outstanding);
+            LOG("ERROR - Dropping request to overwhelmed server, please see https://arkime.com/faq#error-dropping-request for help! size: %u queue: %u path: %.*s", data_len, server->outstanding, key_len, key);
             drop = TRUE;
         }
 
@@ -1052,6 +1054,13 @@ void arkime_http_set_aws_sigv4(void *serverV, const char *aws_sigv4)
     ArkimeHttpServer_t        *server = serverV;
 
     server->aws_sigv4 = strdup(aws_sigv4);
+}
+/******************************************************************************/
+void arkime_http_set_dont_free_response(void *serverV)
+{
+    ArkimeHttpServer_t        *server = serverV;
+
+    server->dontFreeResponse = 1;
 }
 /******************************************************************************/
 gboolean arkime_http_is_arkime(uint32_t hash, uint8_t *sessionId)

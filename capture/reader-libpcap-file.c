@@ -44,6 +44,7 @@ extern int                  readerFilenameOpsNum;
 LOCAL uint64_t              lastBytes;
 LOCAL uint64_t              lastPackets;
 LOCAL uint32_t              lastPacketsBatched;
+LOCAL struct timeval        lastPacketTime;
 
 #ifdef HAVE_SYS_INOTIFY_H
 #include <sys/inotify.h>
@@ -167,7 +168,7 @@ LOCAL void reader_libpcapfile_init_monitor()
 #else
 LOCAL void reader_libpcapfile_init_monitor()
 {
-    if (config.commandSocket)
+    if (config.commandSocket || config.commandList)
         LOG("ERROR - Monitoring not supporting on this OS");
     else
         LOGEXIT("ERROR - Monitoring not supporting on this OS");
@@ -428,7 +429,12 @@ LOCAL void reader_libpcapfile_pcap_cb(u_char *UNUSED(user), const struct pcap_pk
                 h->caplen, h->len);
     }
 
+    if (unlikely(h->caplen > 0xffff)) {
+        return;
+    }
+
     lastPackets++;
+    lastPacketTime = h->ts;
 
     packet->pktlen        = h->caplen;
     packet->pkt           = (u_char *)bytes;
@@ -501,9 +507,9 @@ LOCAL gboolean reader_libpcapfile_read()
         if (!config.dryRun && !config.copyPcap) {
             // Make sure the output file has been opened otherwise we can't update the entry
             while (lastPacketsBatched > 0 && (offlineInfo[readerPos].outputId == 0 || arkime_http_queue_length_best(esServer) > 0)) {
-                g_main_context_iteration(NULL, TRUE);
+                g_main_context_iteration(NULL, FALSE);
             }
-            arkime_db_update_filesize(offlineInfo[readerPos].outputId, lastBytes, lastBytes, lastPackets);
+            arkime_db_update_file(offlineInfo[readerPos].outputId, lastBytes, lastBytes, lastPackets, &lastPacketTime);
         }
         pcap_close(pcap);
         if (reader_libpcapfile_next()) {
@@ -527,7 +533,7 @@ LOCAL void reader_libpcapfile_opened()
 
     if (config.flushBetween) {
         arkime_session_flush();
-        g_main_context_iteration(NULL, TRUE);
+        g_main_context_iteration(NULL, FALSE);
         int rc[4];
 
         // Pause until all packets and commands are done
@@ -536,7 +542,7 @@ LOCAL void reader_libpcapfile_opened()
                 LOG("Waiting next file %d %d %d %d", rc[0], rc[1], rc[2], rc[3]);
             }
             usleep(5000);
-            g_main_context_iteration(NULL, TRUE);
+            g_main_context_iteration(NULL, FALSE);
         }
     }
 
@@ -624,7 +630,7 @@ LOCAL void reader_libpcapfile_start()
     }
 }
 /******************************************************************************/
-void reader_libpcapfile_init(char *UNUSED(name))
+void reader_libpcapfile_init(const char *UNUSED(name))
 {
     offlineDispatchAfter        = arkime_config_int(NULL, "offlineDispatchAfter", 2500, 1, 0x7fff);
 

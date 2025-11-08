@@ -142,6 +142,7 @@ gchar **arkime_config_section_keys(GKeyFile *keyfile, const char *section, gsize
     GError *error = 0;
     gchar **keys = g_key_file_get_keys (keyfile, section, keys_len, &error);
     if (error) {
+        g_error_free(error);
         *keys_len = 0;
         return NULL;
     }
@@ -350,14 +351,14 @@ char arkime_config_boolean(GKeyFile *keyfile, const char *key, char d)
     return value;
 }
 /******************************************************************************/
-void arkime_config_load_includes(char **includes)
+LOCAL void arkime_config_load_includes(char **includes)
 {
     int       i, g, k;
 
     for (i = 0; includes[i]; i++) {
         GKeyFile *keyFile = g_key_file_new();
         GError *error = 0;
-        char *fn = includes[i];
+        const char *fn = includes[i];
         if (*fn == '-')
             fn++;
 
@@ -377,7 +378,7 @@ void arkime_config_load_includes(char **includes)
             gchar **keys = g_key_file_get_keys (keyFile, groups[g], NULL, NULL);
             for (k = 0; keys[k]; k++) {
                 char *value = g_key_file_get_value(keyFile, groups[g], keys[k], NULL);
-                if (value && !error) {
+                if (value) {
                     g_key_file_set_value(arkimeKeyFile, groups[g], keys[k], value);
                     g_free(value);
                 }
@@ -389,7 +390,7 @@ void arkime_config_load_includes(char **includes)
     }
 }
 /******************************************************************************/
-void arkime_config_load_hidden(const char *configFile)
+LOCAL void arkime_config_load_hidden(const char *configFile)
 {
     char line[1000];
     FILE *file = fopen(configFile, "r");
@@ -405,7 +406,7 @@ void arkime_config_load_hidden(const char *configFile)
     config.configFile = g_strdup(line);
 }
 /******************************************************************************/
-char arkime_config_key_sep(const char *key)
+LOCAL char arkime_config_key_sep(const char *key)
 {
     if (strcmp(key, "elasticsearch") == 0 ||
         strcmp(key, "usersElasticsearch") == 0)
@@ -413,7 +414,7 @@ char arkime_config_key_sep(const char *key)
     return ';';
 }
 /******************************************************************************/
-gboolean arkime_config_load_json(GKeyFile *keyfile, char *data, GError **UNUSED(error))
+LOCAL gboolean arkime_config_load_json(GKeyFile *keyfile, char *data, GError **UNUSED(error))
 {
     uint32_t sections[4 * 100]; // Can have up to 100 sections
     memset(sections, 0, sizeof(sections));
@@ -461,7 +462,7 @@ gboolean arkime_config_load_json(GKeyFile *keyfile, char *data, GError **UNUSED(
     return TRUE;
 }
 /******************************************************************************/
-gboolean arkime_config_load_yaml(GKeyFile *keyfile, char *data, GError **UNUSED(error))
+LOCAL gboolean arkime_config_load_yaml(GKeyFile *keyfile, char *data, GError **UNUSED(error))
 {
     yaml_parser_t parser;
     yaml_parser_initialize(&parser);
@@ -554,13 +555,17 @@ LOCAL void arkime_config_override_print(gpointer key, gpointer value, gpointer U
     fprintf(stderr, "%s=%s\n", (char *)key, (char *)value);
 }
 /******************************************************************************/
-void arkime_config_load()
+LOCAL int cstring_cmp(const void *a, const void *b)
+{
+    return strcmp(*(char **)a, *(char **)b);
+}
+/******************************************************************************/
+LOCAL void arkime_config_load()
 {
 
     gboolean  status;
     GError   *error = 0;
     GKeyFile *keyfile;
-    int       i;
 
     keyfile = arkimeKeyFile = g_key_file_new();
 
@@ -587,7 +592,7 @@ void arkime_config_load()
     }
 
     if (g_str_has_prefix(config.configFile, "http://") || g_str_has_prefix(config.configFile, "https://")) {
-        char *end = config.configFile + 8;
+        const char *end = config.configFile + 8;
         while (*end != 0 && *end != '/' && *end != '?') end++;
 
         char *host = g_strndup(config.configFile, end - config.configFile);
@@ -603,7 +608,7 @@ void arkime_config_load()
         }
 
         if (g_str_has_suffix(config.configFile, ".ini"))
-            status = g_key_file_load_from_data(keyfile, (gchar *)data, -1, G_KEY_FILE_NONE, &error);
+            status = g_key_file_load_from_data(keyfile, (gchar *)data, (gsize) -1, G_KEY_FILE_NONE, &error);
         else if (g_str_has_suffix(config.configFile, ".yml") || g_str_has_suffix(config.configFile, ".yaml"))
             status = arkime_config_load_yaml(keyfile, (char *)data, &error);
         else
@@ -629,7 +634,11 @@ void arkime_config_load()
     }
 
     if (!status || error) {
-        CONFIGEXIT("Couldn't load config file (%s) %s", config.configFile, (error ? error->message : ""));
+        if (config.noConfigOption) {
+            LOG("Couldn't load config file (%s) %s", config.configFile, (error ? error->message : ""));
+            status = g_key_file_load_from_data(keyfile, (gchar *)"[default]\n", (gsize) -1, G_KEY_FILE_NONE, &error);
+        } else
+            CONFIGEXIT("Couldn't load config file (%s) %s", config.configFile, (error ? error->message : ""));
     }
 
     char **includes = arkime_config_str_list(keyfile, "includes", NULL);
@@ -638,14 +647,75 @@ void arkime_config_load()
         g_strfreev(includes);
     }
 
+    extern char **environ;
+    for (int e = 0; environ[e]; e++) {
+        if (!g_str_has_prefix(environ[e], "ARKIME_"))
+            continue;
+
+        const char *equal = strchr(environ[e] + 7, '=');
+        if (!equal)
+            continue;
+
+        GString *section = NULL;
+        GString *key;
+
+        if (environ[e][7] == '_') {
+            key = g_string_new_len(environ[e] + 8, equal - environ[e] - 8);
+        } else {
+            const char *underunder = strstr(environ[e] + 7, "__");
+            if (!underunder)
+                continue;
+
+            section = g_string_new_len(environ[e] + 7, underunder - environ[e] - 7);
+            key = g_string_new_len(underunder + 2,  equal - underunder - 2);
+        }
+
+        g_string_replace(key, "DASH", "-", 0);
+        g_string_replace(key, "COLON", ":", 0);
+        g_string_replace(key, "DOT", ".", 0);
+        g_string_replace(key, "SLASH", "/", 0);
+
+        if (section) {
+            g_string_replace(section, "DASH", "-", 0);
+            g_string_replace(section, "COLON", ":", 0);
+            g_string_replace(section, "DOT", ".", 0);
+            g_string_replace(section, "SLASH", "/", 0);
+            g_key_file_set_string(keyfile, section->str, key->str, equal + 1);
+            g_string_free(section, TRUE);
+        } else {
+            g_key_file_set_string(keyfile, "default", key->str, equal + 1);
+        }
+        g_string_free(key, TRUE);
+    }
+
     if (config.dumpConfig) {
         if (config.override) {
             fprintf(stderr, "OVERRIDE:\n");
             g_hash_table_foreach(config.override, arkime_config_override_print, NULL);
         }
-        char *data = g_key_file_to_data(arkimeKeyFile, NULL, NULL);
-        fprintf(stderr, "CONFIG:\n%s", data);
-        g_free(data);
+
+        fprintf(stderr, "CONFIG:\n");
+        gsize groups_len;
+        gchar **groups = g_key_file_get_groups(keyfile, &groups_len);
+        qsort(groups, groups_len, sizeof(gchar *), cstring_cmp);
+        for (int i = 0; groups[i]; i++) {
+            if (i > 0)
+                fprintf(stderr, "\n");
+            fprintf(stderr, "[%s]\n", groups[i]);
+
+            gsize keys_len;
+            gchar **keys = g_key_file_get_keys(keyfile, groups[i], &keys_len, NULL);
+
+            qsort(keys, keys_len, sizeof(gchar *), cstring_cmp);
+
+            for (int j = 0; keys[j]; j++) {
+                gchar *value = g_key_file_get_string(keyfile, groups[i], keys[j], NULL);
+                fprintf(stderr, "%s=%s\n", keys[j], value);
+                g_free(value);
+            }
+            g_strfreev(keys);
+        }
+        g_strfreev(groups);
         if (config.regressionTests) {
             exit(0);
         }
@@ -688,7 +758,7 @@ void arkime_config_load()
     config.nodeClass        = arkime_config_str(keyfile, "nodeClass", NULL);
     gchar **tags            = arkime_config_str_list(keyfile, "dontSaveTags", NULL);
     if (tags) {
-        for (i = 0; tags[i]; i++) {
+        for (int i = 0; tags[i]; i++) {
             if (!(*tags[i]))
                 continue;
             int num = 1;
@@ -711,7 +781,7 @@ void arkime_config_load()
     config.smtpIpHeaders    = arkime_config_str_list(keyfile, "smtpIpHeaders", NULL);
 
     if (config.smtpIpHeaders) {
-        for (i = 0; config.smtpIpHeaders[i]; i++) {
+        for (int i = 0; config.smtpIpHeaders[i]; i++) {
             int len = strlen(config.smtpIpHeaders[i]);
             char *lower = g_ascii_strdown(config.smtpIpHeaders[i], len);
             g_free(config.smtpIpHeaders[i]);
@@ -736,7 +806,7 @@ void arkime_config_load()
 
     config.elasticsearch    = arkime_config_str(keyfile, "elasticsearch", "localhost:9200");
     config.interface        = arkime_config_str_list(keyfile, "interface", NULL);
-    config.pcapDir          = arkime_config_str_list(keyfile, "pcapDir", NULL);
+    config.pcapDir          = arkime_config_str_list(keyfile, "pcapDir", "/opt/arkime/raw");
     config.bpf              = arkime_config_str(keyfile, "bpf", NULL);
     config.yara             = arkime_config_str(keyfile, "yara", NULL);
     config.rirFile          = arkime_config_str(keyfile, "rirFile", NULL);
@@ -745,11 +815,12 @@ void arkime_config_load()
     config.geoLite2Country  = arkime_config_str_list(keyfile, "geoLite2Country", "/var/lib/GeoIP/GeoLite2-Country.mmdb;/usr/share/GeoIP/GeoLite2-Country.mmdb;" CONFIG_PREFIX "/etc/GeoLite2-Country.mmdb");
     config.dropUser         = arkime_config_str(keyfile, "dropUser", NULL);
     config.dropGroup        = arkime_config_str(keyfile, "dropGroup", NULL);
-    config.pluginsDir       = arkime_config_str_list(keyfile, "pluginsDir", NULL);
+    config.pluginsDir       = arkime_config_str_list(keyfile, "pluginsDir", CONFIG_PREFIX "/plugins ; ./plugins ");
     config.parsersDir       = arkime_config_str_list(keyfile, "parsersDir", CONFIG_PREFIX "/parsers ; ./parsers ");
     config.caTrustFile      = arkime_config_str(keyfile, "caTrustFile", NULL);
     char *offlineRegex      = arkime_config_str(keyfile, "offlineFilenameRegex", "(?i)\\.(pcap|cap)$");
 
+    error = NULL;
     config.offlineRegex     = g_regex_new(offlineRegex, 0, 0, &error);
     if (!config.offlineRegex || error) {
         CONFIGEXIT("Couldn't parse offlineRegex (%s) %s", offlineRegex, (error ? error->message : ""));
@@ -814,7 +885,15 @@ void arkime_config_load()
     config.readTruncatedPackets  = arkime_config_boolean(keyfile, "readTruncatedPackets", FALSE);
     config.trackESP              = arkime_config_boolean(keyfile, "trackESP", FALSE);
     config.yaraEveryPacket       = arkime_config_boolean(keyfile, "yaraEveryPacket", TRUE);
-    config.autoGenerateId        = arkime_config_boolean(keyfile, "autoGenerateId", FALSE);
+    char  *autoGenerateId        = arkime_config_str(keyfile, "autoGenerateId", "false");
+    if (strcmp(autoGenerateId, "consistent") == 0) {
+        config.autoGenerateId = 2;
+    } else if (strcmp(autoGenerateId, "true") == 0 || strcmp(autoGenerateId, "1") == 0) {
+        config.autoGenerateId = 1;
+    } else {
+        config.autoGenerateId = 0;
+    }
+    g_free(autoGenerateId);
     config.enablePacketLen       = arkime_config_boolean(NULL, "enablePacketLen", FALSE);
     config.enablePacketDedup     = arkime_config_boolean(NULL, "enablePacketDedup", TRUE);
 
@@ -827,7 +906,7 @@ void arkime_config_load()
 
     gchar **saveUnknownPackets     = arkime_config_str_list(keyfile, "saveUnknownPackets", NULL);
     if (saveUnknownPackets) {
-        for (i = 0; saveUnknownPackets[i]; i++) {
+        for (int i = 0; saveUnknownPackets[i]; i++) {
             const char *s = saveUnknownPackets[i];
 
             if (strcmp(s, "all") == 0) {
@@ -870,7 +949,7 @@ void arkime_config_load()
 
 }
 /******************************************************************************/
-void arkime_config_parse_override_ips(GKeyFile *keyFile)
+LOCAL void arkime_config_parse_override_ips(GKeyFile *keyFile)
 {
     GError   *error = 0;
 
@@ -964,7 +1043,7 @@ void arkime_config_load_override_ips()
     arkime_db_install_override_ip();
 }
 /******************************************************************************/
-void arkime_config_parse_packet_ips(GKeyFile *keyFile)
+LOCAL void arkime_config_parse_packet_ips(GKeyFile *keyFile)
 {
     GError *error = 0;
 
@@ -1209,7 +1288,7 @@ void arkime_config_monitor_files(const char *desc, char **names, ArkimeFilesChan
     cb(names);
 }
 /******************************************************************************/
-gboolean arkime_config_reload_files (gpointer UNUSED(user_data))
+LOCAL gboolean arkime_config_reload_files (gpointer UNUSED(user_data))
 {
     int             i, f;
     struct stat     sb[ARKIME_CONFIG_FILES];
@@ -1269,7 +1348,7 @@ LOCAL gboolean           arkimeConfigVarsSorted = FALSE;
 /******************************************************************************/
 void arkime_config_register_cmd_var(const char *name, void *var, size_t typelen)
 {
-    if (!config.commandSocket)
+    if (!config.commandSocket && !config.commandList)
         return;
 
     ArkimeConfigVar_t *acv = ARKIME_TYPE_ALLOC0(ArkimeConfigVar_t);
@@ -1420,29 +1499,52 @@ LOCAL void arkime_config_cmd_list(int UNUSED(argc), char UNUSED(**argv), gpointe
 }
 #endif
 /******************************************************************************/
-void arkime_config_init()
+void arkime_config_check(const char *prefix, ...)
 {
-    extern char **environ;
-    for (int e = 0; environ[e]; e++) {
-        if (strncmp(environ[e], "ARKIME__", 8) == 0) {
-            char *equal = strchr(environ[e] + 8, '=');
-            if (!equal)
-                continue;
+    va_list args;
+    const char *key;
 
-            if (!config.override) {
-                config.override = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
-            }
+    // Create a GHashTable without key/value destroy notifiers
+    GHashTable *expected_keys = g_hash_table_new(g_str_hash, g_str_equal);
 
-            char *key = g_strndup(environ[e] + 8,  equal - environ[e] - 8);
-            if (g_hash_table_contains(config.override, key)) {
-                g_free(key);
-            } else {
-                g_hash_table_insert(config.override, key, g_strdup(equal + 1));
+    va_start(args, prefix);
+    while ((key = va_arg(args, const char *)) != NULL) {
+        g_hash_table_insert(expected_keys, (gpointer)key, NULL);
+    }
+    va_end(args);
+
+    gchar *sections[3];
+    sections[0] = "default";
+    sections[1] = config.nodeClass;
+    sections[2] = config.nodeName;
+
+    for (int s = 0; s < 3; s++) {
+        if (!sections[s])
+            continue;
+
+        gsize num_keys;
+        gchar **keys;
+
+        keys = g_key_file_get_keys(arkimeKeyFile, sections[s], &num_keys, NULL);
+
+        if (!keys)
+            continue;
+
+        for (gsize j = 0; j < num_keys; j++) {
+            if (g_str_has_prefix(keys[j], prefix) && !g_hash_table_contains(expected_keys, keys[j])) {
+                CONFIGEXIT("In section '%s' unknown key '%s' in config file", sections[s], keys[j]);
             }
         }
-    }
 
-    if (config.commandSocket) {
+        g_strfreev(keys);
+    }
+    g_hash_table_destroy(expected_keys);
+}
+
+/******************************************************************************/
+void arkime_config_init()
+{
+    if (config.commandSocket || config.commandList) {
         arkimeConfigVarsHash = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
         arkime_config_register_cmd_var("debug", &config.debug, sizeof(config.debug));
         arkime_config_register_cmd_var("quiet", &config.quiet, sizeof(config.quiet));

@@ -143,7 +143,7 @@ LOCAL int ssh_parser(ArkimeSession_t *session, void *uw, const uint8_t *data, in
 
     // Version handshake
     if (remaining > 3 && memcmp("SSH", data, 3) == 0) {
-        uint8_t *n = memchr(data, 0x0a, remaining);
+        const uint8_t *n = memchr(data, 0x0a, remaining);
         if (n && *(n - 1) == 0x0d)
             n--;
 
@@ -211,7 +211,7 @@ LOCAL void ssh_save(ArkimeSession_t *session, void *uw, int UNUSED(final))
 {
     SSHInfo_t            *ssh          = uw;
 
-    // Call on save incase it wasn't called based on number of packets above
+    // Call on save in case it wasn't called based on number of packets above
     ssh_send_counting200(session, ssh);
 }
 /******************************************************************************/

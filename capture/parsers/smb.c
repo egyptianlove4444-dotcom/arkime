@@ -241,7 +241,7 @@ LOCAL void smb1_parse_negotiate_request(SMBInfo_t *smb, char *buf, int len)
 
     while (BSB_REMAINING(bsb) > 0) {
         BSB_IMPORT_skip(bsb, 1);
-        char *start = (char *)BSB_WORK_PTR(bsb);
+        const char *start = (char *)BSB_WORK_PTR(bsb);
         while (BSB_REMAINING(bsb) > 0 && *(BSB_WORK_PTR(bsb)) != 0)
             BSB_IMPORT_skip(bsb, 1);
         if (BSB_REMAINING(bsb) == 0)
@@ -446,7 +446,7 @@ LOCAL int smb1_parse(ArkimeSession_t *session, SMBInfo_t *smb, BSB *bsb, char *s
     return 0;
 }
 /******************************************************************************/
-LOCAL int smb2_parse(ArkimeSession_t *session, SMBInfo_t *smb, BSB *bsb, char *state, uint32_t *remlen, int UNUSED(which))
+LOCAL int smb2_parse(ArkimeSession_t *session, const SMBInfo_t *smb, BSB *bsb, char *state, uint32_t *remlen, int UNUSED(which))
 {
     const uint8_t *start = BSB_WORK_PTR(*bsb);
 

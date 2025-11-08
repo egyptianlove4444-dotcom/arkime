@@ -23,8 +23,9 @@
 LOCAL MMDB_s           *geoCountry;
 LOCAL MMDB_s           *geoASN;
 
-#define ARKIME_MIN_DB_VERSION 70
+#define ARKIME_MIN_DB_VERSION 77
 
+int                     arkimeDbVersion = 0;
 extern uint64_t         totalPackets;
 LOCAL  uint64_t         totalSessions = 0;
 LOCAL  uint64_t         totalSessionBytes;
@@ -65,6 +66,7 @@ LOCAL char             *esBulkQuery;
 LOCAL int               esBulkQueryLen;
 LOCAL char             *ecsEventProvider;
 LOCAL char             *ecsEventDataset;
+
 
 extern uint64_t         packetStats[ARKIME_PACKET_MAX];
 
@@ -354,10 +356,22 @@ void arkime_db_geo_lookup6(ArkimeSession_t *session, struct in6_addr addr, char 
 /******************************************************************************/
 LOCAL void arkime_db_send_bulk_cb(int code, uint8_t *data, int data_len, gpointer UNUSED(uw))
 {
+    uint8_t *forbidden;
+
     if (code != 200)
         LOG("Bulk issue.  Code: %d\n%.*s", code, data_len, data);
     else if (config.debug > 4)
         LOG("Bulk Reply code:%d :>%.*s<", code, data_len, data);
+    else if ((forbidden = (uint8_t *)strstr((char *)data, "FORBIDDEN")) != 0) {
+        const uint8_t *end = forbidden + 10;
+        while (forbidden > data && *forbidden != '{') {
+            forbidden--;
+        }
+        while (end < data + data_len && *end != '}') {
+            end++;
+        }
+        LOG("ERROR - OpenSearch/Elasticsearch is returning a FORBIDDEN error. This is mostly likely because: the index is closed, the index is read-only from ILM, or you've hit the disk water marks. %.*s", (int)(end - forbidden + 1), forbidden);
+    }
 }
 /******************************************************************************/
 LOCAL void arkime_db_send_bulk(char *json, int len)
@@ -565,7 +579,7 @@ do { \
     BSB_EXPORT_cstr(jbsb, "],"); \
 } while(0)
 
-int arkime_db_field_sort(const void *a, const void *b)
+LOCAL int arkime_db_field_sort(const void *a, const void *b)
 {
     return strcmp(config.fields[*(short *)a]->dbFieldFull, config.fields[*(short *)b]->dbFieldFull);
 }
@@ -677,7 +691,12 @@ void arkime_db_save_session(ArkimeSession_t *session, int final)
         }
     }
 
-    if (!config.autoGenerateId || session->rootId == (void *)1L) {
+    if (config.autoGenerateId == 2 && session->filePosArray->len > 1) {
+        id_len = snprintf(id, sizeof(id), "%s-%s-%u-%" PRId64, dbInfo[thread].prefix, config.nodeName, (uint32_t)g_array_index(session->fileNumArray, uint32_t, 0), (int64_t)g_array_index(session->filePosArray, int64_t, 1));
+
+        if (session->rootId == GINT_TO_POINTER(1))
+            session->rootId = g_strdup(id);
+    } else if (config.autoGenerateId != 1 || session->rootId == GINT_TO_POINTER(1)) {
         id_len = snprintf(id, sizeof(id), "%s-", dbInfo[thread].prefix);
 
         uuid_generate(uuid);
@@ -692,7 +711,7 @@ void arkime_db_save_session(ArkimeSession_t *session, int final)
             else if (id[i] == '/') id[i] = '_';
         }
 
-        if (session->rootId == (void * )1L)
+        if (session->rootId == GINT_TO_POINTER(1))
             session->rootId = g_strdup(id);
     }
 
@@ -728,7 +747,7 @@ void arkime_db_save_session(ArkimeSession_t *session, int final)
     startPtr = BSB_WORK_PTR(jbsb);
 
     if (sendBulkHeader) {
-        if (config.autoGenerateId) {
+        if (config.autoGenerateId == 1) {
             BSB_EXPORT_sprintf(jbsb, "{\"index\":{\"_index\":\"%ssessions3-%s\"}}\n", config.prefix, dbInfo[thread].prefix);
         } else {
             BSB_EXPORT_sprintf(jbsb, "{\"index\":{\"_index\":\"%ssessions3-%s\", \"_id\": \"%s\"}}\n", config.prefix, dbInfo[thread].prefix, id);
@@ -753,6 +772,9 @@ void arkime_db_save_session(ArkimeSession_t *session, int final)
                        ((uint64_t)session->lastPacket.tv_sec) * 1000 + ((uint64_t)session->lastPacket.tv_usec) / 1000,
                        timediff,
                        session->ipProtocol);
+    if (session->ethertype) {
+        BSB_EXPORT_sprintf(jbsb, "\"ethertype\":%u,", session->ethertype);
+    }
 
     if (sendIndexInDoc) {
         BSB_EXPORT_sprintf(jbsb, "\"index\":\"%ssessions3-%s\",", config.prefix, dbInfo[thread].prefix);
@@ -783,7 +805,20 @@ void arkime_db_save_session(ArkimeSession_t *session, int final)
                           );
 
         if (session->synTime && session->ackTime) {
-            BSB_EXPORT_sprintf(jbsb, "\"initRTT\":%u,", ((session->ackTime - session->synTime) / 2000));
+            BSB_EXPORT_sprintf(jbsb, "\"initRTT\":%u,", ((session->ackTime - session->synTime) / 2));
+        }
+
+        if (session->synTime || session->tcpFlagCnt[ARKIME_TCPFLAG_SYN_ACK]) {
+            BSB_EXPORT_cstr(jbsb, "\"tcpseq\":{");
+            if (session->synTime) {
+                BSB_EXPORT_sprintf(jbsb, "\"src\":%u,", session->synSeq[0]);
+            }
+            if (session->tcpFlagCnt[ARKIME_TCPFLAG_SYN_ACK]) {
+                BSB_EXPORT_sprintf(jbsb, "\"dst\":%u", session->synSeq[1]);
+            } else {
+                BSB_EXPORT_rewind(jbsb, 1); // Remove src comma
+            }
+            BSB_EXPORT_cstr(jbsb, "},"); // Close tcpseq
         }
 
     }
@@ -1497,10 +1532,20 @@ LOCAL uint64_t arkime_db_memory_size()
     return usage.ru_maxrss * 1024UL;
 }
 #endif
+
 /******************************************************************************/
-LOCAL uint64_t arkime_db_memory_max()
+void arkime_db_memory_info(int refresh, uint64_t *memBytes, float *memPercent)
 {
-    return (uint64_t)sysconf (_SC_PHYS_PAGES) * (uint64_t)sysconf (_SC_PAGESIZE);
+    static uint64_t mem;
+    if (refresh || mem == 0) {
+        mem = arkime_db_memory_size();
+    }
+    if (memPercent) {
+        double memMax = (uint64_t)sysconf (_SC_PHYS_PAGES) * (uint64_t)sysconf (_SC_PAGESIZE);
+        *memPercent = mem / memMax * 100.0;
+    }
+    if (memBytes)
+        *memBytes = mem;
 }
 
 /******************************************************************************/
@@ -1585,9 +1630,17 @@ LOCAL void arkime_db_update_stats(int n, gboolean sync)
     uint64_t esDropped       = arkime_http_dropped_count(esServer);
     uint64_t totalBytes      = arkime_packet_total_bytes();
 
-    // If totalDropped wrapped we pretend no drops this time
-    if (totalDropped < lastDropped[n]) {
+    // If totalDropped/overloadDropped/dupDropped wrapped we pretend no drops this time
+    if (unlikely(totalDropped < lastDropped[n])) {
         lastDropped[n] = totalDropped;
+    }
+
+    if (unlikely(overloadDropped < lastOverloadDropped[n])) {
+        lastOverloadDropped[n] = overloadDropped;
+    }
+
+    if (unlikely(dupDropped < lastDupDropped[n])) {
+        lastDupDropped[n] = dupDropped;
     }
 
     for (i = 0; config.pcapDir[i]; i++) {
@@ -1620,13 +1673,14 @@ LOCAL void arkime_db_update_stats(int n, gboolean sync)
     dbTotalDropped[n] += (totalDropped - lastDropped[n]);
     dbTotalK[n] += (totalBytes - lastBytes[n]) / 1000;
 
-    uint64_t mem = arkime_db_memory_size();
-    double   memMax = arkime_db_memory_max();
-    float    memUse = mem / memMax * 100.0;
+    uint64_t memBytes;
+    float    memPercent;
+
+    arkime_db_memory_info(n == 0, &memBytes, &memPercent);
 
 #ifndef __SANITIZE_ADDRESS__
-    if (config.maxMemPercentage != 100 && memUse > config.maxMemPercentage) {
-        LOG("Aborting, max memory percentage reached: %.2f > %u", memUse, config.maxMemPercentage);
+    if (config.maxMemPercentage != 100 && memPercent > config.maxMemPercentage) {
+        LOG("Aborting, max memory percentage reached: %.2f > %u", memPercent, config.maxMemPercentage);
         fflush(stdout);
         fflush(stderr);
         kill(getpid(), SIGSEGV);
@@ -1688,8 +1742,8 @@ LOCAL void arkime_db_update_stats(int n, gboolean sync)
                             freeSpaceM,
                             freeSpaceM * 100.0 / totalSpaceM,
                             arkime_session_monitoring(),
-                            arkime_db_memory_size(),
-                            memUse,
+                            memBytes,
+                            memPercent,
                             diffusage * 10000 / diffms,
                             arkime_writer_queue_length ? arkime_writer_queue_length() : 0,
                             arkime_http_queue_length(esServer),
@@ -1778,7 +1832,7 @@ LOCAL gboolean arkime_db_flush_gfunc (gpointer user_data )
     for (thread = 0; thread < config.packetThreads; thread++) {
         ARKIME_LOCK(dbInfo[thread].lock);
         if (dbInfo[thread].json && BSB_LENGTH(dbInfo[thread].bsb) > 0 &&
-            ((currentTime.tv_sec - dbInfo[thread].lastSave) >= config.dbFlushTimeout || user_data == (gpointer)1)) {
+            ((currentTime.tv_sec - dbInfo[thread].lastSave) >= config.dbFlushTimeout || user_data == GINT_TO_POINTER(1))) {
 
             char   *json = dbInfo[thread].json;
             int     len = BSB_LENGTH(dbInfo[thread].bsb);
@@ -1821,7 +1875,7 @@ LOCAL void arkime_db_health_check_cb(int UNUSED(code), uint8_t *data, int data_l
         LOG("WARNING - Couldn't find status in '%.*s'", data_len, data);
     } else if ( esHealthMS > 20000) {
         LOG("WARNING - Elasticsearch health check took more then 20 seconds %" PRIu64 "ms", esHealthMS);
-    } else if ((status[0] == 'y' && uw == (gpointer)1L) || (status[0] == 'r')) {
+    } else if ((status[0] == 'y' && uw == GINT_TO_POINTER(1)) || (status[0] == 'r')) {
         LOG("WARNING - Elasticsearch is %.*s and took %" PRIu64 "ms to query health, this may cause issues.  See FAQ.", status_len, status, esHealthMS);
     }
 }
@@ -1896,7 +1950,7 @@ LOCAL uint32_t arkime_db_get_sequence_number_sync(const char *name)
                 continue;
 
             if (strstr((char *)data, "FORBIDDEN") != 0) {
-                LOG("You have most likely run out of space on an elasticsearch node, see https://arkime.com/faq#recommended-elasticsearch-settings on setting disk watermarks and how to clear the elasticsearch error");
+                LOG("ERROR - You have most likely run out of space on an elasticsearch node, see https://arkime.com/faq#recommended-elasticsearch-settings on setting disk watermarks and how to clear the elasticsearch error");
             }
             free(data);
             continue;
@@ -1982,7 +2036,7 @@ LOCAL void arkime_db_mkpath(char *path)
  * value starts with { or [, and value is NOT ARKIME_VAR_ARG_STR_SKIP, output ', ${field}:${value}'
  * value is NOT ARKIME_VAR_ARG_STR_SKIP, output ', ${field}:"${value}"'
  */
-char *arkime_db_create_file_full(time_t firstPacket, const char *name, uint64_t size, int locked, uint32_t *id, ...)
+char *arkime_db_create_file_full(const struct timeval *firstPacket, const char *name, uint64_t size, int locked, uint32_t *id, ...)
 {
     static const GRegex *numRegex;
     static const GRegex *numHexRegex;
@@ -1992,7 +2046,7 @@ char *arkime_db_create_file_full(time_t firstPacket, const char *name, uint64_t 
     char               filename[1024];
     char              *json = arkime_http_get_buffer(ARKIME_HTTP_BUFFER_SIZE);
     BSB                jbsb;
-    const uint64_t     fp = firstPacket;
+    const uint64_t     fp = firstPacket->tv_sec;
 
     if (!numRegex) {
         numRegex = g_regex_new("#NUM#", 0, 0, 0);
@@ -2034,7 +2088,7 @@ char *arkime_db_create_file_full(time_t firstPacket, const char *name, uint64_t 
         g_strlcpy(filename, config.pcapDir[config.pcapDirPos], sizeof(filename));
 
         struct tm tmp;
-        localtime_r(&firstPacket, &tmp);
+        localtime_r(&firstPacket->tv_sec, &tmp);
 
         if (config.pcapDirTemplate) {
             int tlen;
@@ -2148,6 +2202,19 @@ char *arkime_db_create_file_full(time_t firstPacket, const char *name, uint64_t 
     }
     va_end(args);
 
+    if (arkimeDbVersion >= 81) {
+        struct timeval currentTime;
+        gettimeofday(&currentTime, NULL);
+
+        BSB_EXPORT_sprintf(jbsb,
+                           ", \"startTimestamp\":%" PRIu64,
+                           ((uint64_t)currentTime.tv_sec) * 1000 + ((uint64_t)currentTime.tv_usec) / 1000);
+
+        BSB_EXPORT_sprintf(jbsb,
+                           ", \"firstTimestamp\":%" PRIu64,
+                           ((uint64_t)firstPacket->tv_sec) * 1000 + ((uint64_t)firstPacket->tv_usec) / 1000);
+    }
+
     BSB_EXPORT_u08(jbsb, '}');
 
     arkime_http_schedule(esServer, "POST", key, key_len, json, BSB_LENGTH(jbsb), NULL, ARKIME_HTTP_PRIORITY_BEST, NULL, NULL);
@@ -2163,11 +2230,6 @@ char *arkime_db_create_file_full(time_t firstPacket, const char *name, uint64_t 
         return (char *)name;
 
     return g_strdup(filename);
-}
-/******************************************************************************/
-char *arkime_db_create_file(time_t firstPacket, const char *name, uint64_t size, int locked, uint32_t *id)
-{
-    return arkime_db_create_file_full(firstPacket, name, size, locked, id, (char *)NULL);
 }
 /******************************************************************************/
 LOCAL void arkime_db_check()
@@ -2219,7 +2281,8 @@ LOCAL void arkime_db_check()
     if (!version)
         LOGEXIT("ERROR - Database version couldn't be found, have you run \"db/db.pl host:port init\"");
 
-    if (atoi((char * )version) < ARKIME_MIN_DB_VERSION) {
+    arkimeDbVersion = atoi((char * )version);
+    if (arkimeDbVersion < ARKIME_MIN_DB_VERSION) {
         LOGEXIT("ERROR - Database version '%.*s' is too old, needs to be at least (%d), run \"db/db.pl host:port upgrade\"", version_len, version, ARKIME_MIN_DB_VERSION);
     }
     free(data);
@@ -2557,24 +2620,45 @@ void arkime_db_update_field(const char *expression, const char *name, const char
     BSB_EXPORT_cstr(fieldBSB, "}}\n");
 }
 /******************************************************************************/
-void arkime_db_update_filesize(uint32_t fileid, uint64_t filesize, uint64_t packetsSize, uint32_t packets)
+void arkime_db_update_file(uint32_t fileid, uint64_t filesize, uint64_t packetsSize, uint32_t packets, const struct timeval *lastPacket)
 {
     char                   key[1000];
     int                    key_len;
-    int                    json_len;
+    BSB                    jbsb;
 
     if (config.dryRun)
         return;
 
-    char                  *json = arkime_http_get_buffer(2000);
+    char                  *json = arkime_http_get_buffer(ARKIME_HTTP_BUFFER_SIZE);
+
 
     key_len = snprintf(key, sizeof(key), "/%sfiles/_update/%s-%u", config.prefix, config.nodeName, fileid);
 
-    json_len = snprintf(json, 2000, "{\"doc\": {\"filesize\": %" PRIu64 ", \"packetsSize\": %" PRIu64 ", \"packets\": %u}}", filesize, packetsSize, packets);
-    if (config.debug)
-        LOG("Updated %s-%u with %s", config.nodeName, fileid, json);
+    BSB_INIT(jbsb, json, ARKIME_HTTP_BUFFER_SIZE);
 
-    arkime_http_schedule(esServer, "POST", key, key_len, json, json_len, NULL, ARKIME_HTTP_PRIORITY_DROPABLE, NULL, NULL);
+    BSB_EXPORT_sprintf(jbsb, "{\"doc\": {\"filesize\": %" PRIu64 ", \"packetsSize\": %" PRIu64 ", \"packets\": %u", filesize, packetsSize, packets);
+
+    if (arkimeDbVersion >= 81) {
+        struct timeval currentTime;
+        gettimeofday(&currentTime, NULL);
+
+        BSB_EXPORT_sprintf(jbsb,
+                           ", \"finishTimestamp\":%" PRIu64,
+                           ((uint64_t)currentTime.tv_sec) * 1000 + ((uint64_t)currentTime.tv_usec) / 1000);
+
+        if (packets > 0 && lastPacket) {
+            BSB_EXPORT_sprintf(jbsb,
+                               ", \"lastTimestamp\":%" PRIu64,
+                               ((uint64_t)lastPacket->tv_sec) * 1000 + ((uint64_t)lastPacket->tv_usec) / 1000);
+        }
+    }
+
+    BSB_EXPORT_cstr(jbsb, "}}");
+
+    if (config.debug)
+        LOG("Updated %s-%u with %.*s", config.nodeName, fileid, (int)BSB_LENGTH(jbsb), json);
+
+    arkime_http_schedule(esServer, "POST", key, key_len, json, BSB_LENGTH(jbsb), NULL, ARKIME_HTTP_PRIORITY_DROPABLE, NULL, NULL);
 }
 /******************************************************************************/
 gboolean arkime_db_file_exists(const char *filename, uint32_t *outputId)
@@ -2643,7 +2727,7 @@ int arkime_db_can_quit()
         if (dbInfo[thread].json && BSB_LENGTH(dbInfo[thread].bsb) > 0) {
             ARKIME_UNLOCK(dbInfo[thread].lock);
 
-            arkime_db_flush_gfunc((gpointer)1);
+            arkime_db_flush_gfunc(GINT_TO_POINTER(1));
             if (config.debug)
                 LOG ("Can't quit, sJson[%d] %u", thread, (uint32_t)BSB_LENGTH(dbInfo[thread].bsb));
             return 1;
@@ -2732,7 +2816,7 @@ void arkime_db_init()
         esBulkQuery = arkime_config_str(NULL, "esBulkQuery", "/_bulk");
         esBulkQueryLen = strlen(esBulkQuery);
 
-        arkime_db_health_check((gpointer)1L);
+        arkime_db_health_check(GINT_TO_POINTER(1));
     }
     myPid = getpid() & 0xffff;
     gettimeofday(&startTime, NULL);
@@ -2804,7 +2888,7 @@ void arkime_db_exit()
             g_source_remove(fieldBSBTimeout);
 
         if (fieldBSB.buf && BSB_LENGTH(fieldBSB) > 0) {
-            arkime_db_fieldsbsb_timeout((gpointer)1);
+            arkime_db_fieldsbsb_timeout(GINT_TO_POINTER(1));
         }
 
         if (fieldBSB.buf) {
@@ -2816,14 +2900,18 @@ void arkime_db_exit()
             g_source_remove(timers[i]);
         }
 
-        arkime_db_flush_gfunc((gpointer)1);
+        arkime_db_flush_gfunc(GINT_TO_POINTER(1));
         dbExit = 1;
         if (!config.noStats) {
             arkime_db_update_stats(0, 1);
         }
-        uint8_t *data = arkime_http_get(esServer, "/_refresh", 9, NULL);
-        if (data)
-            free(data);
+        if (!config.noRefresh) {
+            char path[100];
+            snprintf(path, sizeof(path), "/%s*/_refresh", config.prefix);
+            uint8_t *data = arkime_http_get(esServer, path, -1, NULL);
+            if (data)
+                free(data);
+        }
         arkime_http_free_server(esServer);
     }
 

@@ -129,7 +129,7 @@ LOCAL void arkime_command_free(gpointer data)
 /******************************************************************************/
 void arkime_command_register(const char *name, ArkimeCommandFunc func, const char *help)
 {
-    if (!config.commandSocket) {
+    if (!config.commandSocket && !config.commandList) {
         return;
     }
 
@@ -149,7 +149,7 @@ void arkime_command_register(const char *name, ArkimeCommandFunc func, const cha
 /******************************************************************************/
 void arkime_command_register_opts(const char *name, ArkimeCommandFunc func, const char *help, ...)
 {
-    if (!config.commandSocket) {
+    if (!config.commandSocket && !config.commandList) {
         return;
     }
 
@@ -183,6 +183,7 @@ void arkime_command_register_opts(const char *name, ArkimeCommandFunc func, cons
         g_ptr_array_add(cmd->options, (gpointer)g_strdup(o));
         g_ptr_array_add(cmd->options, (gpointer)g_strdup(h));
     }
+    va_end(args);
 }
 /******************************************************************************/
 void arkime_command_respond(gpointer cc, const char *data, int len)
@@ -192,6 +193,11 @@ void arkime_command_respond(gpointer cc, const char *data, int len)
 
     if (len == -1) {
         len = strlen(data);
+    }
+
+    if (!cc) {
+        LOG("%.*s", len, data);
+        return;
     }
 
     if (g_socket_send(client->socket, data, len, NULL, &error) != len) {
@@ -247,7 +253,7 @@ LOCAL void arkime_command_help(int argc, char **argv, gpointer cc)
     arkime_command_respond(cc, help, BSB_LENGTH(bsb));
 }
 /******************************************************************************/
-void arkime_command_exit(int UNUSED(argc), char UNUSED(**argv), gpointer cc)
+LOCAL void arkime_command_exit(int UNUSED(argc), char UNUSED(**argv), gpointer cc)
 {
     arkime_command_client_free(cc);
 }
@@ -255,6 +261,9 @@ void arkime_command_exit(int UNUSED(argc), char UNUSED(**argv), gpointer cc)
 GSocketAddress *g_unix_socket_address_new (const gchar *path);
 void arkime_command_init()
 {
+    arkime_command_register("help", arkime_command_help, "This help");
+    arkime_command_register("exit", arkime_command_exit, "Close the connection, can also use Ctrl-D");
+
     if (!config.commandSocket) {
         return;
     }
@@ -284,7 +293,12 @@ void arkime_command_init()
     int fd = g_socket_get_fd(socket);
 
     arkime_watch_fd(fd, ARKIME_GIO_READ_COND, arkime_command_server_read_cb, socket);
-    arkime_command_register("help", arkime_command_help, "This help");
-    arkime_command_register("exit", arkime_command_exit, "Close the connection, can also use Ctrl-D");
 }
 /******************************************************************************/
+void arkime_command_start()
+{
+    // Run Commands
+    for (int i = 0; config.commandList && config.commandList[i]; i++) {
+        arkime_command_run(config.commandList[i], NULL);
+    }
+}

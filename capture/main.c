@@ -34,6 +34,7 @@ char                  *arkime_char_to_hex = "0123456789abcdef"; /* don't change 
 uint8_t                arkime_char_to_hexstr[256][3];
 uint8_t                arkime_hex_to_char[256][256];
 uint32_t               hashSalt;
+LOCAL pthread_t        mainThread;
 
 extern ArkimeWriterQueueLength arkime_writer_queue_length;
 extern ArkimePcapFileHdr_t     pcapFileHeader;
@@ -44,7 +45,7 @@ ARKIME_LOCK_DEFINE(LOG);
 LOCAL  gboolean showVersion    = FALSE;
 LOCAL  gboolean useScheme      = FALSE;
 
-#define FREE_LATER_SIZE 32768
+#define FREE_LATER_AND 0x7FFF
 LOCAL int freeLaterFront;
 LOCAL int freeLaterBack;
 typedef struct {
@@ -52,11 +53,11 @@ typedef struct {
     GDestroyNotify     cb;
     uint32_t           sec;
 } ArkimeFreeLater_t;
-ArkimeFreeLater_t  freeLaterList[FREE_LATER_SIZE];
+ArkimeFreeLater_t  freeLaterList[FREE_LATER_AND + 1];
 ARKIME_LOCK_DEFINE(freeLaterList);
 
 /******************************************************************************/
-gboolean arkime_debug_flag()
+LOCAL gboolean arkime_debug_flag()
 {
     config.debug++;
     config.quiet = 0;
@@ -64,7 +65,7 @@ gboolean arkime_debug_flag()
 }
 
 /******************************************************************************/
-gboolean arkime_cmdline_option(const gchar *option_name, const gchar *input, gpointer UNUSED(data), GError **UNUSED(error))
+LOCAL gboolean arkime_cmdline_option(const gchar *option_name, const gchar *input, gpointer UNUSED(data), GError **UNUSED(error))
 {
     const char *equal = strchr(input, '=');
     if (!equal)
@@ -88,6 +89,7 @@ LOCAL  GOptionEntry entries[] = {
     { "pcapdir",   'R',                    0, G_OPTION_ARG_FILENAME_ARRAY, &config.pcapReadDirs,  "Offline pcap directory, all *.pcap files will be processed", NULL },
     { "command-socket",   0,               0, G_OPTION_ARG_FILENAME,       &config.commandSocket, "File path of command socket", NULL },
     { "command-wait",     0,               0, G_OPTION_ARG_NONE,           &config.commandWait,   "In offline pcap mode, wait for command shutdown before exiting", NULL },
+    { "command",     0,                    0, G_OPTION_ARG_STRING_ARRAY,   &config.commandList,   "Command to run on startup", NULL },
     { "monitor",   'm',                    0, G_OPTION_ARG_NONE,           &config.pcapMonitor,   "Used with -R option monitors the directory for closed files", NULL },
     { "packetcnt",   0,                    0, G_OPTION_ARG_INT,            &config.pktsToRead,    "Number of packets to read from each offline file", NULL },
     { "delete",      0,                    0, G_OPTION_ARG_NONE,           &config.pcapDelete,    "In offline mode delete files once processed, requires --copy", NULL },
@@ -115,15 +117,17 @@ LOCAL  GOptionEntry entries[] = {
     { "ignoreerrors", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE,          &config.ignoreErrors,  "Ignore most errors and continue", NULL },
     { "dumpConfig",  0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE,           &config.dumpConfig,    "Display the config.", NULL },
     { "regressionTests", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE,       &config.regressionTests, "Regression Tests", NULL },
-    { "scheme",      0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE,           &useScheme,            "Use new scheme offline pcap", NULL },
+    { "scheme",      0,                    0, G_OPTION_ARG_NONE,           &useScheme,            "Use faster scheme mode for offline pcap processing", NULL },
+    { "libpcap",     0, G_OPTION_FLAG_REVERSE, G_OPTION_ARG_NONE,          &useScheme,            "Use original libpcap mode for offline pcap processing", NULL },
     { "provider",    0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_STRING,         &config.provider,      "Cloud provider", NULL },
     { "profile",     0,                    0, G_OPTION_ARG_STRING,         &config.profile,       "Authentication profile", NULL },
+    { "norefresh",   0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE,           &config.noRefresh,     "Don't use OS/ES refresh ", NULL },
     { NULL,          0, 0,                                    0,           NULL, NULL, NULL }
 };
 
 
 /******************************************************************************/
-void free_args()
+LOCAL void free_args()
 {
     g_free(config.nodeName);
     g_free(config.hostName);
@@ -143,7 +147,6 @@ void free_args()
 LOCAL void arkime_cmd_version(int UNUSED(argc), char UNUSED( * *argv), gpointer cc)
 {
     extern char *curl_version(void);
-    extern char *pcre_version(void);
     extern const char *MMDB_lib_version(void);
     extern const char *zlibVersion(void);
     extern const char *yaml_get_version_string(void);
@@ -159,7 +162,10 @@ LOCAL void arkime_cmd_version(int UNUSED(argc), char UNUSED( * *argv), gpointer 
     BSB_EXPORT_sprintf(bsb, "glib2: %u.%u.%u\n", glib_major_version, glib_minor_version, glib_micro_version);
     BSB_EXPORT_sprintf(bsb, "libpcap: %s\n", pcap_lib_version());
     BSB_EXPORT_sprintf(bsb, "maxminddb: %s\n", MMDB_lib_version());
+#ifdef HAVE_LIBPCRE
+    extern char *pcre_version(void);
     BSB_EXPORT_sprintf(bsb, "pcre: %s\n", pcre_version());
+#endif
     BSB_EXPORT_sprintf(bsb, "yaml: %s\n", yaml_get_version_string());
     BSB_EXPORT_sprintf(bsb, "yara: %s\n", arkime_yara_version());
     BSB_EXPORT_sprintf(bsb, "zlib: %s\n", zlibVersion());
@@ -179,13 +185,12 @@ LOCAL void arkime_cmd_shutdown(int UNUSED(argc), char UNUSED( * *argv), gpointer
     arkime_quit();
 }
 /******************************************************************************/
-void parse_args(int argc, char **argv)
+LOCAL void parse_args(int argc, char **argv)
 {
     GError *error = NULL;
     GOptionContext *context;
 
     extern char *curl_version(void);
-    extern char *pcre_version(void);
     extern const char *MMDB_lib_version(void);
     extern const char *zlibVersion(void);
     extern const char *yaml_get_version_string(void);
@@ -202,8 +207,10 @@ void parse_args(int argc, char **argv)
 
     config.pcapReadOffline = (config.pcapReadFiles || config.pcapReadDirs || config.pcapFileLists);
 
-    if (!config.configFile)
+    if (!config.configFile) {
         config.configFile = g_strdup(CONFIG_PREFIX "/etc/config.ini");
+        config.noConfigOption = 1;
+    }
 
     if (showVersion || config.debug) {
         printf("arkime-capture %s/%s session size=%d packet size=%d api=%d\n", PACKAGE_VERSION, BUILD_VERSION, (int)sizeof(ArkimeSession_t), (int)sizeof(ArkimePacket_t), ARKIME_API_VERSION);
@@ -216,7 +223,10 @@ void parse_args(int argc, char **argv)
         //printf("magic: %d\n", magic_version());
         printf("maxminddb: %s\n", MMDB_lib_version());
         //printf("openssl: %s\n", OpenSSL_version(0));
+#ifdef HAVE_LIBPCRE
+        extern char *pcre_version(void);
         printf("pcre: %s\n", pcre_version());
+#endif
         printf("yaml: %s\n", yaml_get_version_string());
         printf("yara: %s\n", arkime_yara_version());
         printf("zlib: %s\n", zlibVersion());
@@ -290,11 +300,14 @@ void parse_args(int argc, char **argv)
         exit(1);
     }
 
+    if (config.commandList)
+        config.pcapReadOffline = 1;
+
     if ((config.pcapMonitor || config.commandWait) && config.commandSocket) {
         config.pcapReadOffline = 1;
     }
 
-    if (config.pcapMonitor && !config.pcapReadDirs && !config.commandSocket) {
+    if (config.pcapMonitor && !config.pcapReadDirs && !config.commandSocket && !config.commandList) {
         printf("Must specify directories to monitor with -R\n");
         exit(1);
     }
@@ -315,19 +328,20 @@ void arkime_free_later(void *ptr, GDestroyNotify cb)
         return;
 
     struct timespec currentTime;
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &currentTime);
+    clock_gettime(CLOCK_MONOTONIC_COARSE, &currentTime);
 
     ARKIME_LOCK(freeLaterList);
-    if ((freeLaterBack + 1) % FREE_LATER_SIZE == freeLaterFront) {
+    if (((freeLaterBack + 1) & FREE_LATER_AND) == freeLaterFront) {
         freeLaterList[freeLaterFront].cb(freeLaterList[freeLaterFront].ptr);
-        freeLaterFront = (freeLaterFront + 1) % FREE_LATER_SIZE;
+        freeLaterFront = (freeLaterFront + 1) & FREE_LATER_AND;
     }
-
-    freeLaterList[freeLaterBack].sec = currentTime.tv_sec + 7;
-    freeLaterList[freeLaterBack].ptr = ptr;
-    freeLaterList[freeLaterBack].cb  = cb;
-    freeLaterBack = (freeLaterBack + 1) % FREE_LATER_SIZE;
+    int back = freeLaterBack;
+    freeLaterBack = (freeLaterBack + 1) & FREE_LATER_AND;
+    freeLaterList[back].sec = currentTime.tv_sec + 7;
     ARKIME_UNLOCK(freeLaterList);
+
+    freeLaterList[back].ptr = ptr;
+    freeLaterList[back].cb  = cb;
 }
 /******************************************************************************/
 LOCAL gboolean arkime_free_later_check (gpointer UNUSED(user_data))
@@ -336,12 +350,12 @@ LOCAL gboolean arkime_free_later_check (gpointer UNUSED(user_data))
         return TRUE;
 
     struct timespec currentTime;
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &currentTime);
+    clock_gettime(CLOCK_MONOTONIC_COARSE, &currentTime);
     ARKIME_LOCK(freeLaterList);
     while (freeLaterFront != freeLaterBack &&
            freeLaterList[freeLaterFront].sec < currentTime.tv_sec) {
         freeLaterList[freeLaterFront].cb(freeLaterList[freeLaterFront].ptr);
-        freeLaterFront = (freeLaterFront + 1) % FREE_LATER_SIZE;
+        freeLaterFront = (freeLaterFront + 1) & FREE_LATER_AND;
     }
     ARKIME_UNLOCK(freeLaterList);
     return G_SOURCE_CONTINUE;
@@ -371,20 +385,20 @@ int arkime_size_free(void *mem)
     return size - 8;
 }
 /******************************************************************************/
-void controlc(int UNUSED(sig))
+LOCAL void controlc(int UNUSED(sig))
 {
     LOG("Control-C");
     signal(SIGINT, exit); // Double Control-C quits right away
     arkime_quit();
 }
 /******************************************************************************/
-void terminate(int UNUSED(sig))
+LOCAL void terminate(int UNUSED(sig))
 {
     LOG("Terminate");
     arkime_quit();
 }
 /******************************************************************************/
-void reload(int UNUSED(sig))
+LOCAL void reload(int UNUSED(sig))
 {
     arkime_plugins_reload();
 }
@@ -582,7 +596,7 @@ gboolean arkime_string_add(void *hashv, char *string, gpointer uw, gboolean copy
 SUPPRESS_UNSIGNED_INTEGER_OVERFLOW
 uint32_t arkime_string_hash(const void *key)
 {
-    uint8_t *p = (uint8_t *)key;
+    const uint8_t *p = (uint8_t *)key;
     uint32_t n = 0;
     while (*p) {
         n = (n << 5) - n + *p;
@@ -597,7 +611,7 @@ uint32_t arkime_string_hash(const void *key)
 SUPPRESS_UNSIGNED_INTEGER_OVERFLOW
 uint32_t arkime_string_hash_len(const void *key, int len)
 {
-    uint8_t *p = (uint8_t *)key;
+    const uint8_t *p = (uint8_t *)key;
     uint32_t n = 0;
     while (len) {
         n = (n << 5) - n + *p;
@@ -676,7 +690,7 @@ gint arkime_watch_fd(gint fd, GIOCondition cond, ArkimeWatchFd_func func, gpoint
 }
 
 /******************************************************************************/
-void arkime_drop_privileges()
+LOCAL void arkime_drop_privileges()
 {
     if (getuid() != 0)
         return;
@@ -725,7 +739,7 @@ void arkime_add_can_quit (ArkimeCanQuitFunc func, const char *name)
 /*
  * Don't actually end main loop until all the various pieces are done
  */
-gboolean arkime_quit_gfunc (gpointer UNUSED(user_data))
+LOCAL gboolean arkime_quit_gfunc (gpointer UNUSED(user_data))
 {
     LOCAL gboolean readerExit   = TRUE;
     LOCAL gboolean writerExit   = TRUE;
@@ -786,7 +800,7 @@ void arkime_quit()
  * Don't actually init nids/pcap until all the pre tags are loaded.
  * CONTINUE - call again in 1ms
  */
-gboolean arkime_ready_gfunc (gpointer UNUSED(user_data))
+LOCAL gboolean arkime_ready_gfunc (gpointer UNUSED(user_data))
 {
     if (arkime_http_queue_length(esServer))
         return G_SOURCE_CONTINUE;
@@ -808,13 +822,14 @@ gboolean arkime_ready_gfunc (gpointer UNUSED(user_data))
             arkime_writers_start(NULL);
         }
     }
+    arkime_command_start();
     arkime_readers_start();
     if (!config.pcapReadOffline && (pcapFileHeader.dlt == DLT_NULL || pcapFileHeader.snaplen == 0))
         LOGEXIT("ERROR - Reader didn't call arkime_packet_set_dltsnap");
     return G_SOURCE_REMOVE;
 }
 /******************************************************************************/
-void arkime_hex_init()
+LOCAL void arkime_hex_init()
 {
     int i, j;
     for (i = 0; i < 16; i++) {
@@ -908,7 +923,7 @@ void arkime_sched_init()
 }
 */
 /******************************************************************************/
-void arkime_mlockall_init()
+LOCAL void arkime_mlockall_init()
 {
 #ifdef _POSIX_MEMLOCK
     struct rlimit l;
@@ -932,6 +947,12 @@ void arkime_mlockall_init()
         LOG("mlockall with max of %lu", (unsigned long)l.rlim_max);
     }
 #endif
+}
+
+/******************************************************************************/
+gboolean arkime_is_main_thread()
+{
+    return pthread_self() == mainThread;
 }
 
 /******************************************************************************/
@@ -1089,6 +1110,8 @@ int main(int argc, char **argv)
     signal(SIGUSR1, exit);
     signal(SIGCHLD, SIG_IGN);
 
+    mainThread = pthread_self();
+
     mainLoop = g_main_loop_new(NULL, FALSE);
 
     hashSalt = (uint32_t)time(NULL);
@@ -1113,15 +1136,16 @@ int main(int argc, char **argv)
     arkime_readers_init();
     arkime_plugins_init();
     arkime_plugins_load(config.rootPlugins);
-    if (config.pcapReadOffline)
+    if (config.pcapReadOffline) {
         if (useScheme ||
             (config.pcapReadFiles && config.pcapReadFiles[0] && strstr(config.pcapReadFiles[0], "://")) ||
             (config.pcapReadDirs && config.pcapReadDirs[0] && strstr(config.pcapReadDirs[0], "://")))
             arkime_readers_set("scheme");
         else
             arkime_readers_set("libpcap-file");
-    else
+    } else {
         arkime_readers_set(NULL);
+    }
     if (!config.pcapReadOffline) {
         arkime_drop_privileges();
         config.copyPcap = 1;

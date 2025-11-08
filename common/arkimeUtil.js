@@ -19,6 +19,7 @@ const path = require('path');
 const crypto = require('crypto');
 const logger = require('morgan');
 const express = require('express');
+const ini = require('js-ini');
 
 class ArkimeUtil {
   static adminRole;
@@ -110,6 +111,18 @@ class ArkimeUtil {
 
     return ret;
   };
+
+  // ----------------------------------------------------------------------------
+  /**
+   * Does this string try and do some prototype pollution
+   */
+  static isPP (str) {
+    if (Array.isArray(str)) {
+      return str.includes('__proto__') || str.includes('constructor');
+    }
+
+    return str === '__proto__' || str === 'constructor';
+  }
 
   // ----------------------------------------------------------------------------
   /**
@@ -220,6 +233,45 @@ class ArkimeUtil {
 
     console.log(`${section} - Unknown redis url '%s'`, url);
     process.exit(1);
+  }
+
+  // ----------------------------------------------------------------------------
+  /**
+   * Parse the elasticsearch url and return the url and possible auth object
+   */
+  static createElasticsearchInfo (url) {
+    url = url.split(',')[0];
+    url = url.replace(/^elasticsearch/, 'http').replace(/^opensearch/, 'http');
+    let auth;
+    if (url.includes('://usersElasticsearch')) {
+      let es, basicAuth;
+
+      if (ArkimeConfig.get('usersElasticsearch')) {
+        es = ArkimeConfig.get('usersElasticsearch');
+        basicAuth = ArkimeConfig.get('usersElasticsearchBasicAuth');
+      }
+
+      if (!es) {
+        console.log(`ERROR - No usersElasticsearch defined but used in ${url}`);
+        process.exit(1);
+      }
+
+      url = url.replace(/^.*:\/\/usersElasticsearch/, es);
+
+      if (basicAuth) {
+        if (!basicAuth.includes(':')) {
+          basicAuth = Buffer.from(basicAuth, 'base64').toString();
+        }
+        basicAuth = ArkimeUtil.splitRemain(basicAuth, ':', 1);
+
+        auth = {
+          username: basicAuth[0],
+          password: basicAuth[1]
+        };
+      }
+    }
+
+    return { url, auth };
   }
 
   // ----------------------------------------------------------------------------
@@ -598,6 +650,28 @@ class ArkimeUtil {
     if (!ArkimeConfig.insecure) {
       console.log('  * Do you need the --insecure option? (See https://arkime.com/faq#insecure)');
     }
+  }
+
+  // ----------------------------------------------------------------------------
+  /**
+   * Parse INI file synchronously.
+   * @param {string} configFile Path to config file.
+   * @returns An object with the parsed INI file.
+   */
+  static parseIniSync (configFile) {
+    const file = fs.readFileSync(configFile, { encoding: 'utf-8' });
+    const parseResult = ArkimeUtil.parseIniString(file);
+    return parseResult;
+  }
+
+  // ----------------------------------------------------------------------------
+  /**
+   * Parses an INI file string.
+   * @param {string} str INI file string to parse.
+   * @returns An object with the parsed INI file.
+   */
+  static parseIniString (str) {
+    return ini.parse(str, { comment: ['#', ';'], autoTyping: false });
   }
 }
 

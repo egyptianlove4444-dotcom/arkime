@@ -12,7 +12,6 @@
 extern ArkimeConfig_t        config;
 
 lua_State *Ls[ARKIME_MAX_PACKET_THREADS];
-ArkimeSession_t moluaFakeSessions[ARKIME_MAX_PACKET_THREADS];
 
 int molua_pluginIndex;
 
@@ -59,7 +58,7 @@ LOCAL int M_expression_to_fieldId(lua_State *L)
     return 1;
 }
 /******************************************************************************/
-void luaopen_arkime(lua_State *L)
+LOCAL void luaopen_arkime(lua_State *L)
 {
     static const struct luaL_Reg methods[] = {
         { NULL, NULL }
@@ -78,37 +77,23 @@ void luaopen_arkime(lua_State *L)
     lua_setglobal(L, "Arkime");
 }
 /******************************************************************************/
-void molua_session_save(ArkimeSession_t *session, int final)
-{
-    if (final && session->pluginData[molua_pluginIndex]) {
-        MoluaPlugin_t *mp = session->pluginData[molua_pluginIndex];
-
-        if (mp->table) {
-            luaL_unref(Ls[session->thread], LUA_REGISTRYINDEX, mp->table);
-        }
-        ARKIME_TYPE_FREE(MoluaPlugin_t, mp);
-        session->pluginData[molua_pluginIndex] = 0;
-    }
-}
-/******************************************************************************/
 void arkime_plugin_init()
 {
     int thread;
     char **names = arkime_config_str_list(NULL, "luaFiles", "moloch.lua");
 
+    if (!*names || *names[0] == 0) {
+        return;
+    }
+
     molua_pluginIndex = arkime_plugins_register("lua", TRUE);
-
-    arkime_plugins_set_cb("lua", NULL, NULL, NULL, NULL, molua_session_save, NULL, NULL, NULL);
-
 
     for (thread = 0; thread < config.packetThreads; thread++) {
         lua_State *L = Ls[thread] = luaL_newstate();
         luaL_openlibs(L);
-        moluaFakeSessions[thread].thread = thread;
 
         int i;
         for (i = 0; names[i]; i++) {
-
             luaopen_arkime(L);
             luaopen_arkimehttpservice(L);
             luaopen_arkimesession(L);

@@ -1,6 +1,13 @@
+MKDIR_P = mkdir -p
 INSTALL_DIR   = @INSTALL_DIR@
 
-BUILD_VERSION := $(shell @GIT@ describe --tags)
+# If ARKIME_BUILD_FULL_VERSION is set, use it
+BUILD_VERSION := $(ARKIME_BUILD_FULL_VERSION)
+
+# If BUILD_VERSION is still empty, use git
+ifeq ($(strip $(BUILD_VERSION)),)
+    BUILD_VERSION := $(shell git describe --tags)
+endif
 
 CC            = @CC@
 
@@ -34,8 +41,8 @@ C_FILES         = main.c db.c yara.c http.c config.c parsers.c plugins.c field.c
 O_FILES         = $(C_FILES:.c=.o)
 
 INSTALL         = @INSTALL@
-bindir          = @prefix@/bin
-installinclude  = @prefix@/include
+bindir          = $(DESTDIR)@prefix@/bin
+installinclude  = $(DESTDIR)@prefix@/include
 
 SANITIZE_LDFLAGS = -fno-common -fsanitize=address -fsanitize=integer -fsanitize=nullability
 SANITIZE_CFLAGS  = $(SANITIZE_LDFLAGS)
@@ -85,11 +92,11 @@ thirdparty/http_parser.o: thirdparty/http_parser.c
 	$(CC) -fno-strict-aliasing -pthread -fPIC -DNDEBUG -DHTTP_PARSER_STRICT=0 -DHTTP_PARSER_DEBUG=0 @CFLAGS@ -c thirdparty/http_parser.c -o thirdparty/http_parser.o
 
 install: installdirs
-	@mkdir -p $(installinclude)
 	$(INSTALL) *.h thirdparty/http_parser.h $(installinclude)
 	$(INSTALL) capture $(bindir)/capture
 
 installdirs:
+	$(MKDIR_P) $(installinclude)
 	$(INSTALL) -d $(bindir)
 	(cd parsers; $(MAKE) install)
 	(cd plugins; $(MAKE) install)
@@ -101,7 +108,7 @@ distclean realclean clean:
 	rm -f *.o arkime-capture capture */*.o */*.so
 
 cppcheck:
-	cppcheck -q --enable=all --disable=missingInclude --std=c99 -I. -Ithirdparty $(INCLUDE_OTHER) *.c plugins/*.c plugins/*/*.c parsers/*.c
+	cppcheck --suppress=toomanyconfigs --suppress=normalCheckLevelMaxBranches --suppress=constParameterCallback --suppress=nullPointerOutOfMemory --suppress=nullPointerArithmeticOutOfMemory -q --enable=all --disable=missingInclude --std=c99 -I. -Ithirdparty $(INCLUDE_OTHER) *.c plugins/*.c plugins/*/*.c parsers/*.c
 
 format:
 	AStyle --options=.astylerc  *.[ch]  p*/*.c p*/*/*.c  ../tests/plugins/*.c

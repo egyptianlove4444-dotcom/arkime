@@ -144,7 +144,7 @@ LOCAL void flap_classify(ArkimeSession_t *session, const uint8_t *data, int len,
     if (len < flen)
         return;
 
-    // lenght matches or there is another flap frame in the packet
+    // length matches or there is another flap frame in the packet
     if (len == flen || (data[flen] == '*'))
         arkime_session_add_protocol(session, "flap");
 }
@@ -327,6 +327,13 @@ LOCAL void netflow_classify(ArkimeSession_t *session, const uint8_t *data, int l
         return;
 
     arkime_session_add_protocol(session, "netflow");
+}
+/******************************************************************************/
+LOCAL void ident_protocol_classify(ArkimeSession_t *session, const uint8_t *data, int len, int UNUSED(which), void *UNUSED(uw))
+{
+    if (g_strstr_len((char *)data, len, "USERID") != NULL || g_strstr_len((char *)data, len, "ERROR") != NULL) {
+        arkime_session_add_protocol(session, "ident");
+    }
 }
 /******************************************************************************/
 
@@ -513,6 +520,8 @@ void arkime_parser_init()
     arkime_parsers_classifier_register_port("whois",  "whois", 43, ARKIME_PARSERS_PORT_TCP_DST, misc_add_protocol_classify);
 
     arkime_parsers_classifier_register_port("finger",  "finger", 79, ARKIME_PARSERS_PORT_TCP_DST, misc_add_protocol_classify);
+
+    arkime_parsers_classifier_register_port("ident",  NULL, 113, ARKIME_PARSERS_PORT_TCP_DST, ident_protocol_classify);
 
     SIMPLE_CLASSIFY_TCP("rtsp", "RTSP/1.0 ");
 

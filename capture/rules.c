@@ -34,7 +34,7 @@ LOCAL char *yaml_names[] = {
 #endif
 
 
-#define YAML_NODE_SEQUENCE_VALUE (char *)1
+#define YAML_NODE_SEQUENCE_VALUE GINT_TO_POINTER(1)
 typedef struct {
     char      *key;
     char      *value;
@@ -123,7 +123,7 @@ LOCAL void arkime_rules_parser_free_node(YamlNode_t *node)
 {
     if (node->key)
         g_free(node->key);
-    if (node->value > YAML_NODE_SEQUENCE_VALUE)
+    if (node->value != YAML_NODE_SEQUENCE_VALUE)
         g_free(node->value);
     if (node->values)
         g_ptr_array_free(node->values, TRUE);
@@ -134,7 +134,19 @@ LOCAL YamlNode_t *arkime_rules_parser_add_node(YamlNode_t *parent, char *key, ch
 {
     YamlNode_t *node = ARKIME_TYPE_ALLOC(YamlNode_t);
     node->key = key;
-    node->value = value;
+
+    if (!value || value == YAML_NODE_SEQUENCE_VALUE)
+        node->value = value;
+    else if (value[0] == '$' && value[1] == '{' && value[strlen(value) - 1] == '}') {
+        value[strlen(value) - 1] = 0;
+        char *config_value = arkime_config_str(NULL, value + 2, NULL);
+        if (!config_value)
+            CONFIGEXIT("Couldn't find config value %s", value + 2);
+        g_free(value);
+        node->value = config_value;
+    } else {
+        node->value = value;
+    }
 
     if (value) {
         node->values = NULL;
@@ -280,7 +292,7 @@ LOCAL void arkime_rules_load_add_field(ArkimeRule_t *rule, int pos, char *key)
     float            f;
     uint32_t         fint;
     GPtrArray       *rules;
-    patricia_node_t *node;
+    patricia_node_t *node = 0;
 
     config.fields[pos]->ruleEnabled = 1;
 
@@ -366,6 +378,8 @@ LOCAL void arkime_rules_load_add_field(ArkimeRule_t *rule, int pos, char *key)
             if (rule->setRule)
                 node = make_and_lookup(loading.fieldsTree6[pos], key);
         }
+        if (!node)
+            break;
         if (rule->setRule) {
             if (node->data) {
                 rules = node->data;
@@ -432,7 +446,7 @@ LOCAL void arkime_rules_load_add_field_range_match(ArkimeRule_t *rule, int pos, 
 
     if (rule->setRule) {
         if (!loading.fieldsMatch[pos])
-            loading.fieldsMatch[pos] = g_hash_table_new_full(g_direct_hash, g_direct_equal, g_free, arkime_rules_free_array);
+            loading.fieldsMatch[pos] = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, arkime_rules_free_array);
 
         GPtrArray *rules = g_hash_table_lookup(loading.fieldsMatch[pos], (gpointer)match.num);
         if (!rules) {
@@ -867,7 +881,7 @@ LOCAL void arkime_rules_free(ArkimeRulesInfo_t *freeing)
     ARKIME_TYPE_FREE(ArkimeRulesInfo_t, freeing);
 }
 /******************************************************************************/
-void arkime_rules_load(char **names)
+LOCAL void arkime_rules_load(char **names)
 {
     int    i;
 
@@ -1513,7 +1527,7 @@ LOCAL void arkime_rules_check_rule_fields(ArkimeSession_t *const session, Arkime
     }
 }
 /******************************************************************************/
-void arkime_rules_run_field_set_rules(ArkimeSession_t *session, int pos, GPtrArray *rules)
+LOCAL void arkime_rules_run_field_set_rules(ArkimeSession_t *session, int pos, GPtrArray *rules)
 {
     for (int r = 0; r < (int)rules->len; r++) {
         ArkimeRule_t *rule = g_ptr_array_index(rules, r);

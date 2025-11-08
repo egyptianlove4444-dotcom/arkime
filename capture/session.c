@@ -6,6 +6,7 @@
  */
 
 #include <arpa/inet.h>
+#include <sys/socket.h>
 #include "arkime.h"
 
 /******************************************************************************/
@@ -292,16 +293,13 @@ void arkime_session_add_cmd(ArkimeSession_t *session, ArkimeSesCmd sesCmd, gpoin
 /******************************************************************************/
 void arkime_session_add_cmd_thread(int thread, gpointer uw1, gpointer uw2, ArkimeCmd_func func)
 {
-    static ArkimeSession_t fakeSessions[ARKIME_MAX_PACKET_THREADS];
-
-    fakeSessions[thread].thread = thread;
-
     ArkimeSesCmd_t *cmd = ARKIME_TYPE_ALLOC(ArkimeSesCmd_t);
     cmd->cmd = ARKIME_SES_CMD_FUNC;
-    cmd->session = &fakeSessions[thread];
+    cmd->session = NULL;
     cmd->uw1 = uw1;
     cmd->uw2 = uw2;
     cmd->func = func;
+
     ARKIME_LOCK(sessionCmds[thread].lock);
     DLL_PUSH_TAIL(cmd_, &sessionCmds[thread], cmd);
     arkime_packet_thread_wake(thread);
@@ -343,6 +341,20 @@ void arkime_session_mark_for_close (ArkimeSession_t *session, SessionTypes ses)
     }
 }
 /******************************************************************************/
+void arkime_session_flip_src_dst (ArkimeSession_t *session)
+{
+    struct in6_addr        addr;
+    uint16_t               port;
+
+    addr = session->addr1;
+    session->addr1 = session->addr2;
+    session->addr2 = addr;
+
+    port = session->port1;
+    session->port1 = session->port2;
+    session->port2 = port;
+}
+/******************************************************************************/
 LOCAL void arkime_session_free (ArkimeSession_t *session)
 {
     if (session->tcp_next) {
@@ -355,7 +367,7 @@ LOCAL void arkime_session_free (ArkimeSession_t *session)
     }
     g_array_free(session->fileNumArray, TRUE);
 
-    if (session->rootId && session->rootId != (void *)1L)
+    if (session->rootId && session->rootId != GINT_TO_POINTER(1))
         g_free(session->rootId);
 
     if (session->parserInfo) {
@@ -440,7 +452,7 @@ void arkime_session_mid_save(ArkimeSession_t *session, uint32_t tv_sec)
         arkime_plugins_cb_pre_save(session, FALSE);
 
     if (!session->rootId) {
-        session->rootId = (void *)1L;
+        session->rootId = GINT_TO_POINTER(1);
     }
 
     arkime_rules_run_before_save(session, 0);
@@ -941,9 +953,9 @@ void arkime_session_init()
     arkime_session_load_collapse();
 }
 /******************************************************************************/
-LOCAL void arkime_session_flush_close(ArkimeSession_t *session, gpointer UNUSED(uw1), gpointer UNUSED(uw2))
+LOCAL void arkime_session_flush_close(ArkimeSession_t *UNUSED(session), gpointer uw1, gpointer UNUSED(uw2))
 {
-    int thread = session->thread;
+    int thread = GPOINTER_TO_INT(uw1);
     int i;
 
     for (i = 0; i < SESSION_MAX; i++) {
@@ -963,7 +975,7 @@ void arkime_session_flush()
 
     int thread;
     for (thread = 0; thread < config.packetThreads; thread++) {
-        arkime_session_add_cmd_thread(thread, NULL, NULL, arkime_session_flush_close);
+        arkime_session_add_cmd_thread(thread, GINT_TO_POINTER(thread), NULL, arkime_session_flush_close);
     }
 }
 /******************************************************************************/

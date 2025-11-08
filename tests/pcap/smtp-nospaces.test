@@ -21,6 +21,10 @@
             ],
             "dstOuiCnt" : 1,
             "dstPayload8" : "323230206c6f6361",
+            "dstTTL" : [
+               64
+            ],
+            "dstTTLCnt" : 1,
             "email" : {
                "dst" : [
                   "reciever@example.com"
@@ -31,6 +35,7 @@
                ],
                "srcCnt" : 1
             },
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1453298297881,
             "initRTT" : 0,
@@ -113,6 +118,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "48454c4f0d0a4d41",
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "tcpflags" : {
                "ack" : 9,
                "dstZero" : 0,
@@ -123,6 +132,10 @@
                "syn" : 1,
                "syn-ack" : 1,
                "urg" : 0
+            },
+            "tcpseq" : {
+               "dst" : 0,
+               "src" : 3587471381
             },
             "totDataBytes" : 352
          },

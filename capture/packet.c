@@ -12,6 +12,7 @@
 #include <net/ethernet.h>
 #include <errno.h>
 #include "pcap.h"
+#include "arkimeconfig.h"
 
 //#define DEBUG_PACKET
 
@@ -45,6 +46,7 @@ LOCAL int                    outeroui2Field;
 LOCAL int                    outerip1Field;
 LOCAL int                    outerip2Field;
 LOCAL int                    dscpField[2];
+LOCAL int                    ttlField[2];
 
 LOCAL uint64_t               droppedFrags;
 
@@ -76,7 +78,7 @@ uint64_t                     packetStats[ARKIME_PACKET_MAX];
 
 /******************************************************************************/
 LOCAL  ArkimePacketHead_t    packetQ[ARKIME_MAX_PACKET_THREADS];
-LOCAL  uint32_t              overloadDrops[ARKIME_MAX_PACKET_THREADS];
+LOCAL  uint64_t              overloadDrops[ARKIME_MAX_PACKET_THREADS];
 LOCAL  uint32_t              overloadDropTimes[ARKIME_MAX_PACKET_THREADS];
 
 LOCAL  ARKIME_LOCK_DEFINE(frags);
@@ -328,6 +330,9 @@ LOCAL void arkime_packet_process(ArkimePacket_t *packet, int thread)
             if (tc != 0) {
                 arkime_field_int_add(dscpField[packet->direction], session, tc);
             }
+
+            int ttl = ip4->ip_v == 4 ? ip4->ip_ttl : ip6->ip6_hops;
+            arkime_field_int_add(ttlField[packet->direction], session, ttl);
         }
 
         if (pcapFileHeader.dlt == DLT_EN10MB) {
@@ -344,6 +349,10 @@ LOCAL void arkime_packet_process(ArkimePacket_t *packet, int thread)
                 uint16_t vlan = ((uint16_t)(pcapData[n + 2] << 8 | pcapData[n + 3])) & 0xfff;
                 arkime_field_int_add(vlanField, session, vlan);
                 n += 4;
+            }
+
+            if (session->ethertype == 0) {
+                session->ethertype = (pcapData[n] << 8) | pcapData[n + 1];
             }
         }
 
@@ -400,8 +409,6 @@ LOCAL void arkime_packet_process(ArkimePacket_t *packet, int thread)
         if (packet->tunnel & ARKIME_PACKET_TUNNEL_GENEVE) {
             arkime_session_add_protocol(session, "geneve");
         }
-
-
     }
 
     if (mProtocols[packet->mProtocol].process) {
@@ -498,7 +505,7 @@ LOCAL void arkime_packet_save_unknown_packet(int type, ArkimePacket_t *const pac
 }
 
 /******************************************************************************/
-void arkime_packet_frags_free(ArkimeFrags_t *const frags)
+LOCAL void arkime_packet_frags_free(ArkimeFrags_t *const frags)
 {
     ArkimePacket_t *packet;
 
@@ -513,7 +520,7 @@ void arkime_packet_frags_free(ArkimeFrags_t *const frags)
 SUPPRESS_ALIGNMENT
 LOCAL gboolean arkime_packet_frags_process(ArkimePacket_t *const packet)
 {
-    ArkimePacket_t *fpacket;
+    ArkimePacket_t  *fpacket;
     ArkimeFrags_t   *frags;
     char             key[10];
 
@@ -681,7 +688,10 @@ LOCAL void arkime_packet_log(SessionTypes ses)
 
     uint32_t wql = arkime_writer_queue_length();
 
-    LOG("packets: %" PRIu64 " current sessions: %u/%u oldest: %d - recv: %" PRIu64 " drop: %" PRIu64 " (%0.2f) queue: %d disk: %d packet: %d close: %d ns: %d frags: %d/%d pstats: %" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64,
+    float memPercent;
+    arkime_db_memory_info(FALSE, NULL, &memPercent);
+
+    LOG("packets: %" PRIu64 " current sessions: %u/%u oldest: %d - recv: %" PRIu64 " drop: %" PRIu64 " (%0.2f) queue: %d disk: %d packet: %d close: %d ns: %d frags: %d/%d pstats: %" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 " ver: %s mem: %.2f%%",
         totalPackets,
         arkime_session_watch_count(ses),
         arkime_session_monitoring(),
@@ -702,12 +712,93 @@ LOCAL void arkime_packet_log(SessionTypes ses)
         packetStats[ARKIME_PACKET_CORRUPT],
         packetStats[ARKIME_PACKET_UNKNOWN],
         packetStats[ARKIME_PACKET_IPPORT_DROPPED],
-        packetStats[ARKIME_PACKET_DUPLICATE_DROPPED]
+        packetStats[ARKIME_PACKET_DUPLICATE_DROPPED],
+        PACKAGE_VERSION,
+        memPercent
        );
 
     if (config.debug > 0) {
         arkime_rules_stats();
     }
+}
+/******************************************************************************/
+LOCAL void arkime_packet_cmd_stats(int UNUSED(argc), char **UNUSED(argv), gpointer cc)
+{
+    char output[20000];
+    BSB bsb;
+    BSB_INIT(bsb, output, sizeof(output));
+
+    ArkimeReaderStats_t stats;
+    if (arkime_reader_stats(&stats)) {
+        stats.dropped = 0;
+        stats.total = totalPackets;
+    }
+
+    uint32_t wql = arkime_writer_queue_length();
+
+
+    BSB_EXPORT_sprintf(bsb,
+                       "Arkime Version: %s\n"
+                       "Packets Processed: %" PRIu64 "\n"
+                       "Packets Received: %" PRIu64 "\n"
+                       "Packets Dropped: %" PRIu64 " (%0.2f)\n"
+                       "\n"
+                       "Current Sessions: %u\n"
+                       "Current TCP Sessions: %u\n"
+                       "Current UDP Sessions: %u\n"
+                       "Current ICMP Sessions: %u\n"
+                       "Oldest TCP Session: %d\n"
+                       "Oldest UDP Session: %d\n"
+                       "Oldest ICMP Session: %d\n"
+                       "\n"
+                       "ES Queue: %d\n"
+                       "DIsk Queue: %d\n"
+                       "Packet Queue: %d\n"
+                       "Close Queue: %d\n"
+                       "Need Saving Queue: %d\n"
+                       "Frags: %d/%d\n"
+                       "\n"
+                       "Packets Processed: %" PRIu64 "\n"
+                       "Packets IP Dropped: %" PRIu64 "\n"
+                       "Packets Overload Dropped: %" PRIu64 "\n"
+                       "Packets Corrupt: %" PRIu64 "\n"
+                       "Packets Unknown: %" PRIu64 "\n"
+                       "Packets IPPort Dropped: %" PRIu64 "\n"
+                       "Packets Duplicate Dropped: %" PRIu64 "\n",
+
+                       PACKAGE_VERSION,
+                       totalPackets,
+                       stats.total,
+                       stats.dropped - initialDropped,
+                       (stats.total ? (stats.dropped - initialDropped) * (double)100.0 / stats.total : 0),
+
+                       arkime_session_monitoring(),
+                       arkime_session_watch_count(SESSION_TCP),
+                       arkime_session_watch_count(SESSION_UDP),
+                       arkime_session_watch_count(SESSION_ICMP),
+
+                       arkime_session_idle_seconds(SESSION_TCP),
+                       arkime_session_idle_seconds(SESSION_UDP),
+                       arkime_session_idle_seconds(SESSION_ICMP),
+
+                       arkime_http_queue_length(esServer),
+                       wql,
+                       arkime_packet_outstanding(),
+                       arkime_session_close_outstanding(),
+                       arkime_session_need_save_outstanding(),
+                       arkime_packet_frags_outstanding(),
+                       arkime_packet_frags_size(),
+
+                       packetStats[ARKIME_PACKET_DO_PROCESS],
+                       packetStats[ARKIME_PACKET_IP_DROPPED],
+                       packetStats[ARKIME_PACKET_OVERLOAD_DROPPED],
+                       packetStats[ARKIME_PACKET_CORRUPT],
+                       packetStats[ARKIME_PACKET_UNKNOWN],
+                       packetStats[ARKIME_PACKET_IPPORT_DROPPED],
+                       packetStats[ARKIME_PACKET_DUPLICATE_DROPPED]
+                      );
+
+    arkime_command_respond(cc, output, BSB_LENGTH(bsb));
 }
 /******************************************************************************/
 SUPPRESS_ALIGNMENT
@@ -1381,7 +1472,7 @@ void arkime_packet_batch(ArkimePacketBatch_t *batch, ArkimePacket_t *const packe
         overloadDrops[thread]++;
         if ((overloadDrops[thread] % 10000) == 1 && (overloadDropTimes[thread] + 60) < packet->ts.tv_sec) {
             overloadDropTimes[thread] = packet->ts.tv_sec;
-            LOG("WARNING - Packet Q %u is overflowing, total dropped so far %u.  See https://arkime.com/faq#why-am-i-dropping-packets and modify %s", thread, overloadDrops[thread], config.configFile);
+            LOG("WARNING - Packet Q %u is overflowing, total dropped so far %" PRIu64 ".  See https://arkime.com/faq#why-am-i-dropping-packets and modify %s", thread, overloadDrops[thread], config.configFile);
         }
         ARKIME_COND_SIGNAL(packetQ[thread].lock);
         ARKIME_UNLOCK(packetQ[thread].lock);
@@ -1460,7 +1551,7 @@ void arkime_packet_save_ethernet( ArkimePacket_t *const packet, uint16_t type)
 ArkimePacketRC arkime_packet_run_ethernet_cb(ArkimePacketBatch_t *batch, ArkimePacket_t *const packet, const uint8_t *data, int len, uint16_t type, const char *str)
 {
 #ifdef DEBUG_PACKET
-    LOG("enter %p type:%d (0x%x) %s %p %d", packet, type, type, str, data, len);
+    LOG("enter %p type:%u (0x%x) %s %p %d", packet, type, type, str, data, len);
 #endif
 
     if (type == ARKIME_ETHERTYPE_DETECT) {
@@ -1480,7 +1571,7 @@ ArkimePacketRC arkime_packet_run_ethernet_cb(ArkimePacketBatch_t *batch, ArkimeP
     }
 
     if (config.logUnknownProtocols)
-        LOG("Unknown %s ethernet protocol 0x%04x(%d)", str, type, type);
+        LOG("Unknown %s ethernet protocol 0x%04x(%u)", str, type, type);
     arkime_packet_save_ethernet(packet, type);
     return ARKIME_PACKET_UNKNOWN;
 }
@@ -1488,7 +1579,7 @@ ArkimePacketRC arkime_packet_run_ethernet_cb(ArkimePacketBatch_t *batch, ArkimeP
 void arkime_packet_set_ethernet_cb(uint16_t type, ArkimePacketEnqueue_cb enqueueCb)
 {
     if (ethernetCbs[type])
-        LOG ("redining existing callback type %d", type);
+        LOG ("redining existing callback type %u", type);
 
     ethernetCbs[type] = enqueueCb;
 }
@@ -1512,7 +1603,7 @@ ArkimePacketRC arkime_packet_run_ip_cb(ArkimePacketBatch_t *batch, ArkimePacket_
     }
 
     if (config.logUnknownProtocols)
-        LOG("Unknown %s protocol %d", str, type);
+        LOG("Unknown %s protocol %u", str, type);
     if (BIT_ISSET(type, config.ipSavePcap))
         arkime_packet_save_unknown_packet(1, packet);
     return ARKIME_PACKET_UNKNOWN;
@@ -1521,7 +1612,7 @@ ArkimePacketRC arkime_packet_run_ip_cb(ArkimePacketBatch_t *batch, ArkimePacket_
 void arkime_packet_set_ip_cb(uint16_t type, ArkimePacketEnqueue_cb enqueueCb)
 {
     if (type >= ARKIME_IPPROTO_MAX)
-        LOGEXIT ("ERROR - type value too large %d", type);
+        LOGEXIT ("ERROR - type value too large %u", type);
 
     ipCbs[type] = enqueueCb;
 }
@@ -1596,6 +1687,18 @@ void arkime_packet_init()
                                        "Destination non zero differentiated services class selector set for session",
                                        ARKIME_FIELD_TYPE_INT_GHASH,  ARKIME_FIELD_FLAG_CNT,
                                        (char *)NULL);
+
+    ttlField[0] = arkime_field_define("general", "integer",
+                                      "ttl.src", "TTL Src", "srcTTL",
+                                      "Source IP TTL for first few packets",
+                                      ARKIME_FIELD_TYPE_INT_GHASH, ARKIME_FIELD_FLAG_CNT,
+                                      (char *)NULL);
+
+    ttlField[1] = arkime_field_define("general", "integer",
+                                      "ttl.dst", "TTL Dst", "dstTTL",
+                                      "Destination IP TTL for first few packets",
+                                      ARKIME_FIELD_TYPE_INT_GHASH, ARKIME_FIELD_FLAG_CNT,
+                                      (char *)NULL);
 
     arkime_field_define("general", "lotermfield",
                         "mac", "Src or Dst MAC", "macall",
@@ -1738,6 +1841,24 @@ void arkime_packet_init()
                         "fieldECS", "network.community_id",
                         (char *)NULL);
 
+    arkime_field_define("general", "integer",
+                        "tcpseq.src", "TCP Src Seq", "tcpseq.src",
+                        "Source SYN sequence number",
+                        0,  ARKIME_FIELD_FLAG_FAKE,
+                        (char *)NULL);
+
+    arkime_field_define("general", "integer",
+                        "tcpseq.dst", "TCP Dst Seq", "tcpseq.dst",
+                        "Destination SYN-ACK sequence number",
+                        0,  ARKIME_FIELD_FLAG_FAKE,
+                        (char *)NULL);
+
+    arkime_field_define("general", "integer",
+                        "ethertype", "Ethertype", "ethertype",
+                        "The ethernet protocol type",
+                        0,  ARKIME_FIELD_FLAG_FAKE,
+                        (char *)NULL);
+
     int t;
     for (t = 0; t < config.packetThreads; t++) {
         char name[100];
@@ -1762,6 +1883,8 @@ void arkime_packet_init()
     arkime_packet_set_ethernet_cb(ARKIME_ETHERTYPE_RAWFR, arkime_packet_frame_relay);
     arkime_packet_set_ethernet_cb(ETHERTYPE_IP, arkime_packet_ip4);
     arkime_packet_set_ethernet_cb(ETHERTYPE_IPV6, arkime_packet_ip6);
+
+    arkime_command_register("packet-stats", arkime_packet_cmd_stats, "Packet Stats");
 }
 /******************************************************************************/
 uint64_t arkime_packet_dropped_packets()
@@ -1931,7 +2054,7 @@ void arkime_packet_exit()
         fclose(unknownPacketFile[2]);
 }
 /******************************************************************************/
-int arkime_mprotocol_register_internal(char                            *name,
+int arkime_mprotocol_register_internal(const char                      *name,
                                        int                              ses,
                                        ArkimeProtocolCreateSessionId_cb createSessionId,
                                        ArkimeProtocolPreProcess_cb      preProcess,

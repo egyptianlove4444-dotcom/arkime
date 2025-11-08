@@ -22,6 +22,8 @@ const ArkimeUtil = require('../common/arkimeUtil');
 const ArkimeConfig = require('../common/arkimeConfig');
 
 const esSSLOptions = { rejectUnauthorized: !ArkimeConfig.insecure };
+let httpAgent;
+let httpsAgent;
 ArkimeConfig.loaded(() => {
   const esClientKey = Config.get('esClientKey');
   const esClientCert = Config.get('esClientCert');
@@ -35,6 +37,8 @@ ArkimeConfig.loaded(() => {
       esSSLOptions.passphrase = esClientKeyPass;
     }
   }
+  httpAgent = new http.Agent({ keepAlive: true, keepAliveMsecs: 5000, maxSockets: 100 });
+  httpsAgent = new https.Agent(Object.assign({ keepAlive: true, keepAliveMsecs: 5000, maxSockets: 100 }, esSSLOptions));
 });
 
 const clients = {};
@@ -43,8 +47,6 @@ const clusters = {};
 const clusterList = [];
 const authHeader = {};
 let activeESNodes = [];
-const httpAgent = new http.Agent({ keepAlive: true, keepAliveMsecs: 5000, maxSockets: 100 });
-const httpsAgent = new https.Agent(Object.assign({ keepAlive: true, keepAliveMsecs: 5000, maxSockets: 100 }, esSSLOptions));
 
 function hasBody (req) {
   const encoding = 'transfer-encoding' in req.headers;
@@ -420,7 +422,7 @@ app.get('/_cluster/:type/details', function (req, res) {
     } else {
       result.inactive.push(clusterList[i]);
     }
-    result.prefix[clusterList[i]] = node2Prefix(activeNodes[i]);
+    result.prefix[clusterList[i]] = node2Prefix(clusters[clusterList[i]]);
   }
   res.send(result);
 });

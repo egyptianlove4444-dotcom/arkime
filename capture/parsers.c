@@ -42,14 +42,13 @@ LOCAL GHashTable        *namedFuncsHash;
 #define MAGIC_MATCH(offset, needle) memcmp(data+offset, needle, sizeof(needle)-1) == 0
 #define MAGIC_MATCH_LEN(offset, needle) ((len > (int)sizeof(needle)-1+offset) && (memcmp(data+offset, needle, sizeof(needle)-1) == 0))
 
-#define MAGIC_MEMSTR(offset, needle) arkime_memstr(data+offset, len-offset, needle, sizeof(needle)-1)
 #define MAGIC_MEMSTR_LEN(offset, needle) ((len > (int)sizeof(needle)-1+offset) && (arkime_memstr(data+offset, len-offset, needle, sizeof(needle)-1)))
 
 #define MAGIC_STRCASE(offset, needle) strncasecmp(data+offset, needle, sizeof(needle)-1) == 0
 #define MAGIC_STRCASE_LEN(offset, needle) ((len > (int)sizeof(needle)-1+offset) && (strncasecmp(data+offset, needle, sizeof(needle)-1) == 0))
 
 #define MAGIC_RESULT(str) arkime_field_string_add(field, session, str, sizeof(str)-1, TRUE), str
-const char *arkime_parsers_magic_basic(ArkimeSession_t *session, int field, const char *data, int len)
+LOCAL const char *arkime_parsers_magic_basic(ArkimeSession_t *session, int field, const char *data, int len)
 {
     switch (data[0]) {
     case 0:
@@ -64,7 +63,7 @@ const char *arkime_parsers_magic_basic(ArkimeSession_t *session, int field, cons
         if (MAGIC_MATCH(0, "\000\001\000\000\000")) {
             return MAGIC_RESULT("application/x-font-ttf");
         }
-        if (MAGIC_MATCH(0, "\000\000\002\000\001\000")) {
+        if (MAGIC_MATCH_LEN(0, "\000\000\002\000\001\000")) {
             return MAGIC_RESULT("image/x-win-bitmap");
         }
         break;
@@ -944,7 +943,7 @@ LOCAL ArkimeClassifyHead_t classifersUdpPortSrc[0x10000];
 LOCAL ArkimeClassifyHead_t classifersUdpPortDst[0x10000];
 
 /******************************************************************************/
-void arkime_parsers_classifier_add(ArkimeClassifyHead_t *ch, ArkimeClassify_t *c)
+LOCAL void arkime_parsers_classifier_add(ArkimeClassifyHead_t *ch, ArkimeClassify_t *c)
 {
     int i;
     for (i = 0; i < ch->cnt; i++) {
@@ -1032,7 +1031,7 @@ void arkime_parsers_classifier_register_tcp_internal(const char *name, void *uw,
     if (config.debug > 1) {
         char hex[1000];
         arkime_sprint_hex_string(hex, match, matchlen);
-        LOG("adding %s matchlen:%d offset:%d match %s (0x%s)", name, matchlen, offset, match, hex);
+        LOG("adding %s matchlen:%d offset:%d match %.*s (0x%s)", name, matchlen, offset, matchlen, match, hex);
     }
     if (matchlen == 0 || offset != 0) {
         arkime_parsers_classifier_add(&classifersTcp0, c);
@@ -1147,7 +1146,7 @@ void arkime_parsers_classify_tcp(ArkimeSession_t *session, const uint8_t *data, 
     }
 
     for (i = 0; i < classifersTcp1[data[0]].cnt; i++) {
-        classifersTcp1[data[0]].arr[i]->func(session, data, remaining, which, classifersTcp1[data[0]].arr[i]);
+        classifersTcp1[data[0]].arr[i]->func(session, data, remaining, which, classifersTcp1[data[0]].arr[i]->uw);
     }
 
     for (i = 0; i < classifersTcp2[data[0]][data[1]].cnt; i++) {

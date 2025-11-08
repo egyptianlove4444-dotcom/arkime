@@ -571,7 +571,7 @@ LOCAL int arkime_hp_cb_on_headers_complete (http_parser *parser)
     http->header[0][0] = http->header[1][0] = 0;
 
     if (http->urlString) {
-        char *ch = http->urlString->str;
+        const char *ch = http->urlString->str;
         while (*ch) {
             if (*ch < 32) {
                 arkime_session_add_tag(session, "http:control-char");
@@ -623,7 +623,7 @@ LOCAL int arkime_hp_cb_on_headers_complete (http_parser *parser)
                 }
                 if (!arkime_field_string_add(urlsField, session, http->urlString->str, http->urlString->len, FALSE))
                     g_free(http->urlString->str);
-                g_string_free(http->urlString, FALSE);
+                (void)g_string_free(http->urlString, FALSE);
                 g_string_free(http->hostString, TRUE);
             } else {
                 /* Host header doesn't match the url */
@@ -638,7 +638,7 @@ LOCAL int arkime_hp_cb_on_headers_complete (http_parser *parser)
                     g_free(http->hostString->str);
 
                 g_string_free(http->urlString, TRUE);
-                g_string_free(http->hostString, FALSE);
+                (void)g_string_free(http->hostString, FALSE);
             }
         } else {
             /* Normal case, url starts with /, so no extra host in url */
@@ -651,7 +651,7 @@ LOCAL int arkime_hp_cb_on_headers_complete (http_parser *parser)
             if (!arkime_field_string_add(urlsField, session, http->hostString->str, http->hostString->len, FALSE))
                 g_free(http->hostString->str);
             g_string_free(http->urlString, TRUE);
-            g_string_free(http->hostString, FALSE);
+            (void)g_string_free(http->hostString, FALSE);
         }
 
         http->urlString = NULL;
@@ -664,7 +664,7 @@ LOCAL int arkime_hp_cb_on_headers_complete (http_parser *parser)
         }
         if (!arkime_field_string_add(urlsField, session, http->urlString->str, http->urlString->len, FALSE))
             g_free(http->urlString->str);
-        g_string_free(http->urlString, FALSE);
+        (void)g_string_free(http->urlString, FALSE);
 
         http->urlString = NULL;
     } else if (http->hostString) {
@@ -742,7 +742,7 @@ LOCAL int http_parse(ArkimeSession_t *session, void *uw, const uint8_t *data, in
     return 0;
 }
 /******************************************************************************/
-void http_save(ArkimeSession_t *session, void *uw, int final)
+LOCAL void http_save(ArkimeSession_t *session, void *uw, int final)
 {
     HTTPInfo_t            *http          = uw;
 

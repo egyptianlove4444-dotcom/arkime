@@ -12,7 +12,7 @@ const crypto = require('crypto');
 const passport = require('passport');
 const DigestStrategy = require('passport-http').DigestStrategy;
 const BasicStrategy = require('passport-http').BasicStrategy;
-const iptrie = require('iptrie');
+const iptrie = require('arkime-iptrie');
 const CustomStrategy = require('passport-custom');
 const LocalStrategy = require('passport-local');
 const express = require('express');
@@ -54,6 +54,7 @@ class Auth {
    */
   static app (app, options) {
     Auth.#app = app;
+    app.use(Auth.#ppChecker);
     app.use(Auth.#authRouter);
 
     app.post('/api/login', bodyParser.urlencoded({ extended: true }));
@@ -153,10 +154,15 @@ class Auth {
     if (options.userAuthIps) {
       for (const cidr of options.userAuthIps) {
         const parts = cidr.split('/');
-        if (parts[0].includes(':')) {
-          Auth.#userAuthIps.add(parts[0], +(parts[1] ?? 128), 1);
-        } else {
-          Auth.#userAuthIps.add(`::ffff:${parts[0]}`, 96 + +(parts[1] ?? 32), 1);
+        try {
+          if (parts[0].includes(':')) {
+            Auth.#userAuthIps.add(parts[0], +(parts[1] ?? 128), 1);
+          } else {
+            Auth.#userAuthIps.add(`::ffff:${parts[0]}`, 96 + +(parts[1] ?? 32), 1);
+          }
+        } catch (e) {
+          console.log('ERROR - userAuthIps setting contains bad IP or cidr', cidr);
+          process.exit(1);
         }
       }
     } else if (Auth.mode === 'header') {
@@ -197,7 +203,6 @@ class Auth {
       check('discoverURL', 'authDiscoverURL');
       check('clientId', 'authClientId');
       check('clientSecret', 'authClientSecret');
-      check('redirectURIs', 'authRedirectURIs');
       Auth.#strategies = ['oidc'];
       Auth.#passportAuthOptions = { session: true, failureRedirect: `${Auth.#basePath}api/login`, scope: Auth.#authConfig.oidcScope };
       sessionAuth = true;
@@ -514,6 +519,7 @@ class Auth {
         if (!user.enabled) { return done('User not enabled'); }
         if (!user.headerAuthEnabled) { return done('User header auth not enabled'); }
 
+        await user.updateDynamicRoles(req.headers);
         user.setLastUsed();
         return done(null, user);
       }
@@ -538,7 +544,7 @@ class Auth {
       const client = new issuer.Client({
         client_id: Auth.#authConfig.clientId,
         client_secret: Auth.#authConfig.clientSecret,
-        redirect_uris: Auth.#authConfig.redirectURIs.split(','),
+        redirect_uris: Auth.#authConfig.redirectURIs ? Auth.#authConfig.redirectURIs.split(',') : undefined,
         token_endpoint_auth_method: 'client_secret_post'
       });
 
@@ -564,6 +570,7 @@ class Auth {
           if (!user.enabled) { return done('User not enabled'); }
           if (!user.headerAuthEnabled) { return done('User header auth not enabled'); }
 
+          await user.updateDynamicRoles(userinfo);
           user.setLastUsed();
           return done(null, user);
         }
@@ -665,7 +672,7 @@ class Auth {
       }
 
       // Don't look up user for receiveSession
-      if (req.url.match(/^\/receiveSession/) || req.url.match(/^\/api\/sessions\/receive/)) {
+      if (req.url.match(/^\/receiveSession/i) || req.url.match(/^\/api\/sessions\/receive/i)) {
         return done(null, {});
       }
 
@@ -700,6 +707,10 @@ class Auth {
 
   // ----------------------------------------------------------------------------
   static #checkIps (req, res) {
+    if (req.ip === undefined) {
+      return 0;
+    }
+
     if (req.ip.includes(':')) {
       if (!Auth.#userAuthIps.find(req.ip)) {
         res.status(403);
@@ -728,12 +739,20 @@ class Auth {
     if (nuser.passStore === undefined) {
       nuser.passStore = Auth.pass2store(nuser.userId, crypto.randomBytes(48));
     }
+
     if (nuser.userId !== userId) {
-      console.log(`WARNING - the userNameHeader (${Auth.#userNameHeader}) said to use '${userId}' while the userAutoCreateTmpl returned '${nuser.userId}', reseting to use '${userId}'`);
+      if (nuser.userId === undefined) {
+        if (ArkimeConfig.debug > 0) {
+          console.log(`WARNING - the userAutoCreateTmpl didn't set a userId field, instead using header/oidc set '${userId}'`);
+        }
+      } else {
+        console.log(`WARNING - the userAutoCreateTmpl set userId to a different value then header/oidc '${userId}' while the userAutoCreateTmpl returned '${nuser.userId}', reseting to use '${userId}'`);
+      }
       nuser.userId = userId;
     }
+
     if (nuser.userName === undefined || nuser.userName === 'undefined') {
-      console.log(`WARNING - The userAutoCreateTmpl didn't set a userName, using userId for ${nuser.userId}`);
+      console.log(`WARNING - The userAutoCreateTmpl didn't set a userName, using userId ${nuser.userId} for userName`);
       nuser.userName = nuser.userId;
     }
 
@@ -745,6 +764,23 @@ class Auth {
       }
       return User.getUserCache(userId, cb);
     });
+  }
+
+  // ----------------------------------------------------------------------------
+  static #ppChecker (req, res, next) {
+    if (req.path.match(/\/(__proto__|constructor)/)) {
+      return ArkimeUtil.serverError.call(res, 403, 'Bad path ' + ArkimeUtil.safeStr(req.path));
+    }
+
+    if (!req.query) { return next(); }
+
+    for (const key in req.query) {
+      if (ArkimeUtil.isPP(req.query[key])) {
+        return ArkimeUtil.serverError.call(res, 403, 'Invalid value for ' + ArkimeUtil.safeStr(key));
+      }
+    }
+
+    return next();
   }
 
   // ----------------------------------------------------------------------------
@@ -761,13 +797,18 @@ class Auth {
       req.url = req.url.replace('/', Auth.#basePath);
     }
 
-    if (req.url !== '/api/login' && req.originalUrl !== '/' && req.session) {
+    if (req.url.toLowerCase() !== '/api/login' && req.originalUrl !== '/' && req.session) {
       // save the original url so we can redirect after successful login
       // the ogurl is saved in the form login page and accessed using req.body.ogurl
       req.session.ogurl = Buffer.from(Auth.obj2authNext(req.originalUrl)).toString('base64');
     }
 
-    passport.authenticate(Auth.#strategies, Auth.#passportAuthOptions)(req, res, function (err) {
+    const passportAuthOptionsExtra = {};
+    if (Auth.#strategies.includes('oidc') && (Auth.#authConfig.redirectURIs === undefined || Auth.#authConfig.redirectURIs.split(',').length > 1)) {
+      passportAuthOptionsExtra.redirect_uri = req.protocol + '://' + req.hostname + `${Auth.#basePath}auth/login/callback`;
+    }
+
+    passport.authenticate(Auth.#strategies, { ...Auth.#passportAuthOptions, ...passportAuthOptionsExtra })(req, res, function (err) {
       if (Auth.#basePath !== '/') {
         req.url = req.url.replace(Auth.#basePath, '/');
       }
@@ -1004,7 +1045,7 @@ class Auth {
       }
 
       userId = req.user.userId;
-    } else if (!req.user.hasRole('usersAdmin') || (!req.url.startsWith('/api/user/password') && Auth.#appAdminRole && !req.user.hasRole(Auth.#appAdminRole))) {
+    } else if (!req.user.hasRole('usersAdmin') || (!req.url.toLowerCase().startsWith('/api/user/password') && Auth.#appAdminRole && !req.user.hasRole(Auth.#appAdminRole))) {
       // user is trying to get another user's settings without admin privilege
       return res.serverError(403, 'Need admin privileges');
     } else {
@@ -1087,20 +1128,22 @@ class ESStore extends expressSession.Store {
       }
     });
 
-    // Delete old sids
-    await ESStore.#client.deleteByQuery({
-      index: ESStore.#index,
-      body: {
-        query: {
-          range: {
-            _timestamp: {
-              lte: new Date().getTime() - ESStore.#ttl
+    // Delete old sids, ignore errors
+    try {
+      await ESStore.#client.deleteByQuery({
+        index: ESStore.#index,
+        body: {
+          query: {
+            range: {
+              _timestamp: {
+                lte: new Date().getTime() - ESStore.#ttl
+              }
             }
           }
-        }
-      },
-      timeout: '5m'
-    });
+        },
+        timeout: '5m'
+      });
+    } catch (err) { }
   }
 
   // ----------------------------------------------------------------------------

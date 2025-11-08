@@ -20,6 +20,7 @@
                "ICANN, IANA Department"
             ],
             "dstOuiCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1335958313152,
             "icmp" : {
@@ -70,6 +71,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcRIR" : "ARIN",
+            "srcTTL" : [
+               255
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 128
          },
          "header" : {

@@ -92,6 +92,7 @@ class UserAPIs {
   };
 
   /**
+   * @private
    * validate and set the session column layout on the user
    *
    * @param {object} req - The request object.
@@ -119,6 +120,7 @@ class UserAPIs {
   }
 
   /**
+   * @private
    * validate and set the session info field layout on the user
    *
    * @param {object} req - The request object.
@@ -143,6 +145,7 @@ class UserAPIs {
   }
 
   /**
+   * @private
    * validate and set the SPIView layout on the user
    *
    * @param {object} req - The request object.
@@ -168,6 +171,7 @@ class UserAPIs {
   }
 
   /**
+   * @private
    * Validate and set the info field layout on the user.
    *
    * @param {object} req - The request object.
@@ -201,6 +205,7 @@ class UserAPIs {
   };
 
   /**
+   * @private
    * Validate and set the sessions column layout on the user.
    *
    * @param {object} req - The request object.
@@ -235,6 +240,7 @@ class UserAPIs {
   };
 
   /**
+   * @private
    * Validate and set the SPIView layout on the user.
    *
    * @param {object} req - The request object.
@@ -268,6 +274,7 @@ class UserAPIs {
   }
 
   /**
+   * @private
    * Validate and update the sessions column layout on the user.
    *
    * @param {object} req - The request object.
@@ -295,6 +302,7 @@ class UserAPIs {
   };
 
   /**
+   * @private
    * Validate and update the info field layout on the user.
    *
    * @param {object} req - The request object.
@@ -322,6 +330,7 @@ class UserAPIs {
   };
 
   /**
+   * @private
    * Validate and update the SPIView layout on the user.
    *
    * @param {object} req - The request object.
@@ -350,6 +359,7 @@ class UserAPIs {
   }
 
   /**
+   * @private
    * Delete a specified layout from the user object.
    *
    * @param {string} layoutKey - The key on the user of the layout type to delete.
@@ -441,6 +451,7 @@ class UserAPIs {
    * @param {string} theme=default-theme - The color theme to apply to the UI. Can be a name of a predefined field or a list of color codes if using a custom theme.
    * @param {boolean} manualQuery=false - Whether to load the sessions data by default or wait for a user to hit search manually.
    * @param {array} timelineDataFilters=['network.packets','network.bytes','totDataBytes'] - The filters to display on the sessions timeline graph to change the graphs data.
+   * @param {string} hideTags="" - A comma separated list of tags to hide from sessions
    * @param {string} logo - The optionally configurable logo to show in the top navbar.
    */
 
@@ -555,13 +566,12 @@ class UserAPIs {
    * @returns {string} text - The success/error message to (optionally) display to the user.
    */
   static updateUserSettings (req, res) {
-    req.settingUser.settings = (
-      ({ // only allow these properties in the settings
-        logo, theme, timezone, spiGraph, numPackets, infoFields, manualQuery, detailFormat,
-        connSrcField, connDstField, sortDirection, showTimestamps, connNodeFields,
-        connLinkFields, timelineDataFilters
-      }) => ({ logo, theme, timezone, spiGraph, numPackets, infoFields, manualQuery, detailFormat, connSrcField, connDstField, sortDirection, showTimestamps, connNodeFields, connLinkFields, timelineDataFilters })
-    )(req.body);
+    req.settingUser.settings = ['ms', 'logo', 'theme', 'timezone', 'spiGraph', 'numPackets', 'infoFields', 'manualQuery', 'detailFormat',
+      'connSrcField', 'connDstField', 'sortDirection', 'showTimestamps', 'connNodeFields',
+      'connLinkFields', 'timelineDataFilters', 'hideTags'].reduce((obj, key) => {
+      obj[key] = req.body[key];
+      return obj;
+    }, {});
 
     User.setUser(req.settingUser.userId, req.settingUser, (err, info) => {
       if (err) {

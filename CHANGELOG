@@ -1,9 +1,11 @@
-NOTICE: Please see https://arkime.com/faq#upgrading-moloch for upgrading info
+NOTICE: Please see https://arkime.com/faq#upgrading-arkime for upgrading info
 
 OpenSearch Versions:
+  * Arkime >= 5.7.0  supports 1.x, 2.x or 3.x
   * Arkime >= 3.0.0  supports 1.x or 2.x
 
 Elasticsearch Versions:
+  * Arkime >= 5.7.0  supports ES >= 7.10.0, 8.x, or 9.x
   * Arkime >= 4.0.0  supports ES >= 7.10.0 or 8.x, not 9.x or later
   * Arkime >= 3.0.0  supports ES >= 7.10.0, not 8.x or later
   * Moloch >= 2.7.0  supports ES >= 7.4.0, not 8.x or later
@@ -32,7 +34,235 @@ NOTICE: Restart wiseService before capture when upgrading
 NOTICE: Cross-cluster Shortcuts require you to not restart all your viewers at once after upgrading
 NOTICE: Create a parliament config file before upgrading (see https://arkime.com/settings#parliament and https://arkime.com/faq#how_do_i_upgrade_to_arkime_5)
 
-5.4.1 2024/09/xx
+5.8.3 2025/11/xx
+
+5.8.2 2025/10/27
+## Release
+  - #3425 docker.sh add --add-admin option
+## Capture
+  - #3414 Support tls client hello packets that are split
+## Capture/Viewer
+  - #3408 ja4d6 support
+## Viewer
+  - #3412 Files tab can paginate over 10k entries now
+
+5.8.1 2025/10/20
+## Release
+  - #3367 fix Configure not setting elasticsearchBasicAuth correctly
+  - New version of ja4d
+## Capture
+  - #3363 Fix lua session.dstIp
+  - #3368 Fix rules reload crash
+  - #3401 Fix dead lock if using s3 writer and s3 scheme reader
+## Viewer
+  - #3385 Fix missing pcap file header crash
+  - #3398 Fix leaving 10 oldest files since 5.4.0
+  - #3398 Log expire delete errors
+
+5.8.0 2025/09/22
+## Release
+  - #3287 Node 20.19.4
+## All
+  - #3352 Abort and useful error for bad userAuthIps setting
+## Capture/Viewer
+  - #3307 Added garland timestamp plugin
+## Capture
+  - #3294 Improved dhcpv6 parser and ja4d display
+  - #3297, #3321 Fix lua memory leaks
+  - #3298 Fix dns encoding issues with answers
+  - #3299 Handle more than 255 ciphers with ja4
+  - #3305, #3337 added basic ip AH protocol support
+  - #3314 fix SQS/S3 with MinIO (thanks @mcgillowen)
+## db.pl
+  - #3320 Fixed some Elasticsearch/Opensearch calls that still had types
+  - #3323, #3328 New db.pl repair implementation that can fix multiple issues
+## Viewer
+  - #3319 Fix export csv from SPI Graph
+  - #3344 Fix parsing quoted arrays in wildcards
+  - #3358 Fixed files created with s3 capture scheme not showing in viewer
+          if not in top level directory
+## WISE
+  - #3339 Elasticsearch source can have paths value shortcuts
+  - #3359 Elasticsearch source can have integer and object values
+
+5.7.1 2025/07/23
+## All
+  - #3259 Config stored in Elasticsearch/OpenSearch now respects --insecure
+  - #3279, #3274, #3273 NPM dependabot fixes
+## Capture/Viewer
+  - #3258 Add new ethertype field
+## Capture
+  - #3258 unkEthernet plugin now groups sessions by ethertype + macs
+  - #3276 fix wise lookups for some hashed string fields
+## Cont3xt
+  - #3253 IPQualityScore support (thanks @RamboV)
+
+5.7.0 2025/06/11
+## BREAKING
+  - User defined roles with the user-role-mappings feature used to require
+     role- prefix but didn't work, now they require role: prefix and do work
+## Release
+  - #3196 Fix Debian 13 dependency libyara issue
+  - #3205 arkime_config_interfaces.sh -n with dash fix
+  - #3211 Node 20.19.2
+  - #3231 No longer use screwdriver, only github actions, goodbye el7
+  - #3233 EL10 initial support
+  - #3244 Support make DESTDIR install
+## All
+  - #3237 Add missing settings to addUser.js/arkime_add_user.sh
+## Viewer
+  - #3199,#3200 Support searchable snapshots with partial- index prefix
+  - #3218 Elasticsearch 9 dstats fix
+  - #3224 Fix/Change user-role-mappings must start with role: instead of role-
+## Capture
+  - #3209 New espSavePackets setting
+  - #3229 Drop packets larger than 0xffff in size
+
+5.6.4 2025/04/29
+## Viewer
+  - #3188 Prevent more session prototype pollution with connections
+  - #3188 Improved receiveSession auth & index verification
+
+5.6.3 2025/04/22
+## Release
+  - #3173 Initial Debian 13 support
+## Capture
+  - #3175 Don't include dns.host.tokens in host query
+  - #3177 support autoGenerateId=consistent to reprocess into same sid
+## Multies
+  - #3176 Fix issues when clusters are down (thanks @DavidCHIA-Rub)
+## Viewer
+  - #3164 Support searchable snapshots with partial- index prefix
+  - #3167, #3169 Prevent more session prototype pollution
+  - #3170 Add error handling for unknown views
+
+5.6.2 2025/03/27
+## db.pl
+  - #3135 Support passwords > 55 characters (thanks @GhostNaix)
+  - #3143 new db.pl mv <node> <old prefix> <new prefix> to move many files at once
+## Capture
+  - #3105 Support decrypted smtp
+  - #3136 Support ERSPAN Type III
+  - #3157 Log bulk FORBIDDEN errors
+## Viewer
+  - #3137 Prevent session prototype pollution
+  - #3142 Fix session detail long arrays not displaying correctly
+  - #3147 Fix erspan decode issues
+  - #3148 Fix issuerCN not displaying in session detail
+  - #3151 Fix cert.serial not displaying in session detail
+  - #3158 Fix s3http/s scheme not caching blocks correctly
+  - #3159 Fix packets not showing up when using writer-s3 without compression
+
+5.6.1 2025/02/13
+## BREAKING
+  - Cont3xt Twilio integration requires a new token
+## Release
+  - #3103 arkime_config_interfaces.sh supports interface envs
+  - #3121 Node 20.18.3
+  - #3115 build ja4 docker images
+  - #3127 docker.sh now sets ARKIME__usersElasticsearch (when not set) from
+          ARKIME__elasticsearch (when set)
+## All
+  - #3093 if config file doesn't exist, don't exit with error.  This is useful
+          with containers + envs. Capture does require the file to
+	  exist if specified.
+  - #3107 ARKIME__ envs now use cont3xt,wiseService,... instead of default for
+          section name for those respective applications
+  - #3110 can now use https://usersElasticsearch in url/config and Arkime will
+          fill in from the env/config
+  - #3122 if no section used for override, use something sane
+## Capture
+  - #3100 fix SSLv2 constants and misidentify DTLS 0 (thanks @droe)
+  - #3105 parse smtp data that isn't actually encrypted after STARTTLS
+## db.pl
+  - #3101 support ARKIME__prefix, ARKIME__elasticsearchBasicAuth,
+          ARKIME__elasticsearchAPIKey envs
+  - #3124 new arkime_configs index for storing config files
+## Viewer
+  - #3095 Show Arkime capture version in the stats UI
+  - #3114 Fix http sessions missing http request not showing body (thanks @bryangwj)
+  - #3120 Fix value actions not showing for info column fields
+## WISE
+  - #3107, #3108 Support webBasePath
+  - #3110, #3111, #3127 if usersElasticsearch isn't set will use elasticsearch config
+## Cont3xt
+  - #3118 update Twilio integration to v2 API
+
+5.6.0 2025/01/15
+## BREAKING
+  - Unknown config variables that start with tpacketv3 or simple will now cause an error
+## Release
+  - #3051 arkime_config_interfaces.sh doesn't try and set up "dummy" interface
+  - #3081 afterinstall.sh uses prefix correctly
+## All
+  - #3037 remove babel
+  - #3087 Env vars improvements and DASH, COLON, DOT, SLASH are now replaced
+## Capture
+  - #3046 added packet-stats command
+  - #3052 add ARKIME_default__ support for env vars
+  - #3062 only refresh Arkime indices on exit
+  - #3063 use suricata vlan when using sessionIdTracking
+  - #3070 new --command option instead of having to use command-socket
+  - #3072 add ident protocol classifier
+  - #3079 check tpacketv3* and simple* config settings
+  - #3083 new _flipSrcDst rule action
+  - #3083 new tcp.synSet rule field
+  - #3083 rules can now use values of "${configvar}"
+  - #3088 fix memory leak if "<root>" is dns query
+## Viewer
+  - #3055 fix missing session.network section error
+  - #3059 fix losing custom theme setting
+  - #3068 display all kinds of data nodes on ES Nodes tab
+  - #3076 Fix incorrect Overload Drops/s statistic in Capture Stats page (thanks @mcgillowen)
+
+5.5.1 2024/11/20
+## Release
+  - #3011 Add db.pl to docker.sh
+  - #3015 Node 20.18.0
+  - #3021 docker.sh now supports --init and installs missing iproute2 package
+## All
+  - #3010 fix lmdb cont3xt and users DB
+## Cont3xt
+  - #3012 add basic databricks support
+  - #3016 fixed cont3xt health check request every second - should be 10s
+## db.pl
+  - #3017 New field-list, field-rm commands
+## Viewer
+  - #3008 fixed sessions column sorting not working in some cases
+## WISE
+  - #3012 add basic databricks support
+
+5.5.0 2024/11/11
+## Release
+  - #2925 Node 20.17.0
+  - #2956 CyberChef 10.19.2
+  - #2992 Now have official docker container at https://github.com/arkime/arkime/packages
+## All
+  - #2947 new user-role-mappings section for oidc/header auth
+  - #2950 support authRedirectURIs list (thanks @divinehawk)
+  - #2954 Fix form/oidc authMode failure to start when deleting old sids failed
+  - #2964 Add to files tab lastPacket timestamp and start/finish processing time stamps
+  - #2995 Switch to arkime-iptrie
+## Capture
+  - #2924 _closeNow rule operator
+  - #2929 Update ja4 for alpn edge cases
+  - #2940 cert.ja4x* now work with rules/wise
+  - #2959 New --libpcap option for libpcap offline processing vs
+          --scheme for new faster method
+  - #2969 Add back host.dns to rules
+  - #2991 Add initial IP TTL and TCP Seq number fields
+  - #2996 pcapDir defaults to /opt/arkime/raw and pluginDir defaults to /opt/arkime/plugins
+## db.pl
+  - #2946 fix sync-files not handling multiple nodes, or dash containing nodes
+          correctly (thanks @dennisse)
+## Multies
+  - #2962 fix caTrustFile not working with multies
+## Viewer
+  - #2926 cronQueries=auto now uses the node name in the unique key
+  - #2935 spigraph treemap shows unique Dst/Src IPs
+  - #2945 add iframe 'allow' option
+  - #2965 fix millisecond timestamp setting not saving
+  - #2966 Add the ability to hide tags in the session table
 
 5.4.0 2024/08/05
 ## Release

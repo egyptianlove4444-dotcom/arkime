@@ -22,9 +22,9 @@ LOCAL  int                   ja4RawField;
 LOCAL  gboolean              ja4Raw;
 
 typedef struct {
-    uint8_t             buf[8192];
-    uint16_t            len;
-    char                which;
+    uint8_t             buf[2][8192];
+    uint16_t            len[2];
+    char                serverWhich;
 } TLSInfo_t;
 
 extern uint8_t    arkime_char_to_hexstr[256][3];
@@ -53,10 +53,7 @@ LOCAL void tls_session_version(ArkimeSession_t *session, uint16_t ver)
     char str[100];
 
     switch (ver) {
-    case 0x0100:
-        arkime_field_string_add(verField, session, "SSLv1", 5, TRUE);
-        break;
-    case 0x0200:
+    case 0x0002:
         arkime_field_string_add(verField, session, "SSLv2", 5, TRUE);
         break;
     case 0x0300:
@@ -87,10 +84,7 @@ LOCAL void tls_session_version(ArkimeSession_t *session, uint16_t ver)
 LOCAL void tls_ja4_version(uint16_t ver, char vstr[3])
 {
     switch (ver) {
-    case 0x0100:
-        memcpy(vstr, "s1", 3);
-        break;
-    case 0x0200:
+    case 0x0002:
         memcpy(vstr, "s2", 3);
         break;
     case 0x0300:
@@ -290,8 +284,25 @@ LOCAL void tls_2digit_to_string(int val, char *str)
     str[1] = (val % 10) + '0';
 }
 /******************************************************************************/
-uint32_t tls_process_client_hello_data(ArkimeSession_t *session, const uint8_t *data, int len, void UNUSED(*uw))
+LOCAL void tls_alpn_to_ja4alpn(const uint8_t *alpn, int len, uint8_t *ja4alpn)
 {
+    if (len == 0)
+        return;
+
+    len--;  // len now the offset of last byte, which could be 0
+    if (isalnum(alpn[0]) && isalnum(alpn[len])) {
+        ja4alpn[0] = tolower(alpn[0]);
+        ja4alpn[1] = tolower(alpn[len]);
+    } else {
+        ja4alpn[0] = arkime_char_to_hexstr[alpn[0]][0];
+        ja4alpn[1] = arkime_char_to_hexstr[alpn[len]][1];
+    }
+}
+/******************************************************************************/
+LOCAL uint32_t tls_process_client_hello_data(ArkimeSession_t *session, const uint8_t *data, int len, void UNUSED(*uw))
+{
+#define JA4_MAX_CIPHERS 500
+
     if (len < 7)
         return -1;
 
@@ -305,8 +316,8 @@ uint32_t tls_process_client_hello_data(ArkimeSession_t *session, const uint8_t *
     BSB ecja3bsb;
 
     char     ja4HasSNI = 'i';
-    uint16_t ja4Ciphers[256];
-    uint8_t  ja4NumCiphers = 0;
+    uint16_t ja4Ciphers[JA4_MAX_CIPHERS];
+    uint16_t ja4NumCiphers = 0;
     uint8_t  ja4NumExtensions = 0;
     uint16_t ja4Extensions[256];
     uint8_t  ja4NumExtensionsSome = 0;
@@ -360,8 +371,10 @@ uint32_t tls_process_client_hello_data(ArkimeSession_t *session, const uint8_t *
             BSB_IMPORT_u16(cbsb, c);
             if (!tls_is_grease_value(c)) {
                 BSB_EXPORT_sprintf(ja3bsb, "%d-", c);
-                ja4Ciphers[ja4NumCiphers] = c;
-                ja4NumCiphers++;
+                if (ja4NumCiphers < JA4_MAX_CIPHERS) {
+                    ja4Ciphers[ja4NumCiphers] = c;
+                    ja4NumCiphers++;
+                }
             }
             skiplen -= 2;
         }
@@ -427,13 +440,13 @@ uint32_t tls_process_client_hello_data(ArkimeSession_t *session, const uint8_t *
 
                     uint16_t llen = 0;
                     BSB_IMPORT_u16(bsb, llen); // list len
-                    while (llen > 0 && !BSB_IS_ERROR(bsb)) {
+                    BSB_SHRINK_REMAINING(bsb, llen);
+                    while (BSB_REMAINING(bsb) >= 2) {
                         uint16_t c = 0;
                         BSB_IMPORT_u16(bsb, c);
                         if (!tls_is_grease_value(c)) {
                             BSB_EXPORT_sprintf(ecja3bsb, "%d-", c);
                         }
-                        llen -= 2;
                     }
                     BSB_EXPORT_rewind(ecja3bsb, 1); // Remove last -
                 } else if (etype == 0x000b) { // Elliptic Curves point formats
@@ -442,11 +455,11 @@ uint32_t tls_process_client_hello_data(ArkimeSession_t *session, const uint8_t *
 
                     uint16_t llen = 0;
                     BSB_IMPORT_u08(bsb, llen); // list len
-                    while (llen > 0 && !BSB_IS_ERROR(bsb)) {
+                    BSB_SHRINK_REMAINING(bsb, llen);
+                    while (BSB_REMAINING(bsb) >= 1) {
                         uint8_t c = 0;
                         BSB_IMPORT_u08(bsb, c);
                         BSB_EXPORT_sprintf(ecfja3bsb, "%d-", c);
-                        llen -= 1;
                     }
                     BSB_EXPORT_rewind(ecfja3bsb, 1); // Remove last -
                 } else if (etype == 0x000d) { // Signature Algorithms
@@ -455,11 +468,11 @@ uint32_t tls_process_client_hello_data(ArkimeSession_t *session, const uint8_t *
 
                     uint16_t llen = 0;
                     BSB_IMPORT_u16(bsb, llen); // list len
-                    while (llen > 0 && !BSB_IS_ERROR(bsb)) {
+                    BSB_SHRINK_REMAINING(bsb, llen);
+                    while (BSB_REMAINING(bsb) >= 2) {
                         uint16_t a = 0;
                         BSB_IMPORT_u16(bsb, a);
                         ja4Algos[ja4NumAlgos++] = a;
-                        llen -= 2;
                     }
                 } else if (etype == 0x10) { // ALPN
                     ja4NumExtensionsSome--;
@@ -472,8 +485,7 @@ uint32_t tls_process_client_hello_data(ArkimeSession_t *session, const uint8_t *
                     const uint8_t *astr = NULL;
                     BSB_IMPORT_ptr (bsb, astr, alen);
                     if (alen > 0 && astr && !BSB_IS_ERROR(bsb)) {
-                        ja4ALPN[0] = astr[0];
-                        ja4ALPN[1] = astr[alen - 1];
+                        tls_alpn_to_ja4alpn(astr, alen, ja4ALPN);
                     }
                 } else if (etype == 0x2b) { // etype 0x2b is supported version
                     BSB bsb;
@@ -481,13 +493,13 @@ uint32_t tls_process_client_hello_data(ArkimeSession_t *session, const uint8_t *
 
                     uint16_t llen = 0;
                     BSB_IMPORT_u08(bsb, llen); // list len
-                    while (llen > 0 && !BSB_IS_ERROR(bsb)) {
+                    BSB_SHRINK_REMAINING(bsb, llen);
+                    while (BSB_REMAINING(bsb) >= 2) {
                         uint16_t supported_version = 0;
                         BSB_IMPORT_u16(bsb, supported_version);
                         if (!tls_is_grease_value(supported_version)) {
                             ver = MAX(supported_version, ver);
                         }
-                        llen--;
                     }
                 } else if (etype == 0xffce) { // esni
                     arkime_session_add_tag(session, "tls:has_esni");
@@ -541,7 +553,7 @@ uint32_t tls_process_client_hello_data(ArkimeSession_t *session, const uint8_t *
 
     BSB_EXPORT_ptr(ja4_rbsb, ja4, 11);
 
-    char tmpBuf[5 * 256];
+    char tmpBuf[5 * JA4_MAX_CIPHERS];
     BSB tmpBSB;
 
     // Sort ciphers, convert to hex, first 12 bytes of sha256
@@ -616,7 +628,6 @@ LOCAL void tls_process_client(ArkimeSession_t *session, const uint8_t *data, int
         const uint8_t *ssldata = BSB_WORK_PTR(sslbsb);
         int            ssllen = MIN(BSB_REMAINING(sslbsb) - 5, ssldata[3] << 8 | ssldata[4]);
 
-
         arkime_parsers_call_named_func(tls_process_client_hello_func, session, ssldata + 5, ssllen, NULL);
     }
 }
@@ -626,40 +637,43 @@ LOCAL int tls_parser(ArkimeSession_t *session, void *uw, const uint8_t *data, in
 {
     TLSInfo_t            *tls          = uw;
 
-    // If not the server half ignore
-    if (which != tls->which)
-        return 0;
-
     // Copy the data we have
-    memcpy(tls->buf + tls->len, data, MIN(remaining, (int)sizeof(tls->buf) - tls->len));
-    tls->len += MIN(remaining, (int)sizeof(tls->buf) - tls->len);
+    memcpy(tls->buf[which] + tls->len[which], data, MIN(remaining, (int)sizeof(tls->buf[which]) - tls->len[which]));
+    tls->len[which] += MIN(remaining, (int)sizeof(tls->buf[which]) - tls->len[which]);
 
     // Make sure we have header
-    if (tls->len < 5)
+    if (tls->len[which] < 5)
         return 0;
 
     // Not handshake protocol, stop looking
-    if (tls->buf[0] != 0x16) {
-        tls->len = 0;
+    if (tls->buf[which][0] != 0x16) {
+        tls->len[which] = 0;
         arkime_parsers_unregister(session, uw);
         return 0;
     }
 
     // Need the whole record
-    int need = ((tls->buf[3] << 8) | tls->buf[4]) + 5;
-    if (need > tls->len)
+    int need = ((tls->buf[which][3] << 8) | tls->buf[which][4]) + 5;
+    if (need > tls->len[which])
         return 0;
 
-    if (tls_process_server_handshake_record(session, tls->buf + 5, need - 5)) {
-        tls->len = 0;
-        arkime_parsers_unregister(session, uw);
-        return 0;
+    // Now actually process server or client records
+    if (which == tls->serverWhich) {
+        if (tls_process_server_handshake_record(session, tls->buf[which] + 5, need - 5)) {
+            tls->len[which] = 0;
+            arkime_parsers_unregister(session, uw);
+            return 0;
+        }
+    } else {
+        if (tls->buf[which][5] == 1) {
+            tls_process_client(session, tls->buf[which], need);
+        }
     }
-    tls->len -= need;
 
-    // Still more data to process
-    if (tls->len) {
-        memmove(tls->buf, tls->buf + need, tls->len);
+    // Remove current frame if more data
+    tls->len[which] -= need;
+    if (tls->len[which]) {
+        memmove(tls->buf[which], tls->buf[which] + need, tls->len[which]);
         return 0;
     }
 
@@ -670,9 +684,10 @@ LOCAL void tls_save(ArkimeSession_t *session, void *uw, int UNUSED(final))
 {
     TLSInfo_t            *tls          = uw;
 
-    if (tls->len > 5 && tls->buf[0] == 0x16) {
-        tls_process_server_handshake_record(session, tls->buf + 5, tls->len - 5);
-        tls->len = 0;
+    int which = tls->serverWhich;
+    if (tls->len[which] > 5 && tls->buf[which][0] == 0x16) {
+        tls_process_server_handshake_record(session, tls->buf[which] + 5, tls->len[which] - 5);
+        tls->len[which] = 0;
     }
 }
 /******************************************************************************/
@@ -691,7 +706,6 @@ LOCAL void tls_classify(ArkimeSession_t *session, const uint8_t *data, int len, 
     if (arkime_session_has_protocol(session, "tls"))
         return;
 
-
     /* 1 Content Type - 0x16
      * 2 Version 0x0301 - 0x03 - 03
      * 2 Length
@@ -701,15 +715,16 @@ LOCAL void tls_classify(ArkimeSession_t *session, const uint8_t *data, int len, 
         arkime_session_add_protocol(session, "tls");
 
         TLSInfo_t  *tls = ARKIME_TYPE_ALLOC(TLSInfo_t);
-        tls->len        = 0;
+        tls->len[0] = 0;
+        tls->len[1] = 0;
 
         arkime_parsers_register2(session, tls_parser, tls, tls_free, tls_save);
 
         if (data[5] == 1) {
-            tls_process_client(session, data, (int)len);
-            tls->which      = (which + 1) % 2;
+            //tls_process_client(session, data, (int)len);
+            tls->serverWhich      = (which + 1) % 2;
         } else {
-            tls->which      = which;
+            tls->serverWhich      = which;
         }
     }
 }

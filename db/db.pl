@@ -77,6 +77,8 @@
 # 79 - added parliament notifier flags to notifiers index and new parliament index
 #      added editRoles to views, shortcuts, and queries
 # 80 - added info field configs
+# 81 - added files firstTimestamp, lastTimestamp, startTimestamp, finishTimestamp
+# 82 - added configs
 
 use HTTP::Request::Common;
 use LWP::UserAgent;
@@ -90,9 +92,9 @@ use URI;
 use strict;
 use warnings;
 
-my $VERSION = 80;
+my $VERSION = 82;
 my $verbose = 0;
-my $PREFIX = undef;
+my $PREFIX = $ENV{ARKIME_default__prefix} || $ENV{ARKIME__prefix};
 my $OLDPREFIX = "";
 my $SECURE = 1;
 my $CLIENTCERT = "";
@@ -122,8 +124,8 @@ my $DESCRIPTION = "";
 my $LOCKED = 0;
 my $GZ = 0;
 my $REFRESH = 60;
-my $ESAPIKEY = "";
-my $USERPASS = "";
+my $ESAPIKEY = $ENV{ARKIME_default__elasticsearchAPIKey} || $ENV{ARKIME__elasticsearchAPIKey} || "";
+my $USERPASS = $ENV{ARKIME_default__elasticsearchBasicAuth} || $ENV{ARKIME__elasticsearchBasicAuth} || "";
 my $IFNEEDED = 0;
 
 #use LWP::ConsoleLogger::Everywhere ();
@@ -175,7 +177,7 @@ sub showHelp($)
     print "    --ilm                      - Use ilm (Elasticsearch) to manage\n";
     print "    --ism                      - Use ism (OpenSearch) to manage\n";
     print "    --ifneeded                 - Only init or upgrade if needed, otherwise just exit\n";
-    print "  wipe [<init opts>]           - Same as init, but leaves user,views,parliament indices untouched\n";
+    print "  wipe [<init opts>]           - Same as init, but leaves configs,user,views,parliament indices untouched\n";
     print "  clean                        - Remove all Arkime indices\n";
     print "  upgrade [<init opts>]        - Upgrade Arkime's mappings from a previous version or use to change settings\n";
     print "  expire <type> <num> [<opts>] - Perform daily OpenSearch/Elasticsearch maintenance and optimize all indices, not needed with ILM\n";
@@ -233,14 +235,17 @@ sub showHelp($)
     print "\n";
     print "File Commands:\n";
     print "  mv <old fn> <new fn>         - Move a pcap file in the database (doesn't change disk)\n";
+    print "  mv <node> <old prefix> <new> - For a node move files matching prefix to new prefix (doesn't change disk)\n";
     print "  rm <fn>                      - Remove a pcap file in the database (doesn't change disk)\n";
     print "  rm-missing <node>            - Remove from db any MISSING files on THIS machine for the named node\n";
     print "  add-missing <node> <dir>     - Add to db any MISSING files on THIS machine for named node and directory\n";
-    print "  sync-files  <nodes> <dirs>   - Add/Remove in db any MISSING files on THIS machine for named node(s) and directory(s), both comma separated\n";
+    print "  sync-files <nodes> <dirs>    - Add/Remove in db any MISSING files on THIS machine for named node(s) and directory(s), both comma separated\n";
     print "\n";
     print "Field Commands:\n";
-    print "  field disable <exp>          - Disable a field from being indexed\n";
-    print "  field enable <exp>           - Enable a field from being indexed\n";
+    print "  field-list                   - List fields\n";
+    print "  field-disable <exp>          - Disable a field from being indexed by capture\n";
+    print "  field-enable <exp>           - Enable a field from being indexed by capture\n";
+    print "  field-rm <exp>               - Remove the field definition, capture may re-add\n";
     print "\n";
     print "Node Commands:\n";
     print "  rm-node <node>               - Remove from db all data for node (doesn't change disk)\n";
@@ -591,6 +596,18 @@ sub filesUpdate
     }
   ],
   "properties": {
+    "startTimestamp": {
+      "type": "date"
+    },
+    "finishTimestamp": {
+      "type": "date"
+    },
+    "firstTimestamp": {
+      "type": "date"
+    },
+    "lastTimestamp": {
+      "type": "date"
+    },
     "num": {
       "type": "long"
     },
@@ -1153,6 +1170,11 @@ sub fieldsUpdate
       "dbField2": "huntName"
     }');
     ecsFieldsUpdate();
+}
+################################################################################
+sub fields82Fix
+{
+    esPost("/${PREFIX}fields/_update/host.dns.all", '{"doc":{"regex": "^host\\\\.dns(?:(?!\\\\.(cnt|all|tokens)$).)*$"}}', 1);
 }
 
 ################################################################################
@@ -5792,8 +5814,6 @@ logmsg "Setting parliament_v50 mapping\n" if ($verbose > 0);
 esPut("/${PREFIX}parliament_v50/_mapping?master_timeout=${ESTIMEOUT}s&pretty", $mapping);
 }
 ################################################################################
-
-################################################################################
 sub viewsCreate
 {
   my $settings = '
@@ -5849,6 +5869,26 @@ logmsg "Setting views_v40 mapping\n" if ($verbose > 0);
 esPut("/${PREFIX}views_v40/_mapping?master_timeout=${ESTIMEOUT}s&pretty", $mapping);
 }
 
+################################################################################
+sub configsCreate
+{
+  my $settings = '
+{
+  "settings": {
+    "index.priority": 30,
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "auto_expand_replicas": "0-3"
+  },
+  "mappings": {
+    "enabled" : "false"
+  }
+}';
+
+  logmsg "Creating configs_v50 index\n" if ($verbose > 0);
+  esPut("/${PREFIX}configs_v50?master_timeout=${ESTIMEOUT}s", $settings);
+  esAlias("add", "configs_v50", "configs");
+}
 ################################################################################
 sub usersCreate
 {
@@ -6100,7 +6140,7 @@ my($type, $prefix, $t) = @_;
 ################################################################################
 sub dbESVersion {
     my $esversion = esGet("/");
-    my @parts = split(/\./, $esversion->{version}->{number});
+    my @parts = split(/[-.]/, $esversion->{version}->{number});
     $main::esVersion = int($parts[0]*100*100) + int($parts[1]*100) + int($parts[2]);
     return $esversion;
 }
@@ -6140,9 +6180,9 @@ sub dbCheckForActivity {
 my ($prefix) = @_;
 
     logmsg "This upgrade requires all capture nodes to be stopped.  Checking\n";
-    my $json1 = esGet("/${prefix}stats/stat/_search?size=1000&rest_total_hits_as_int=true");
+    my $json1 = esGet("/${prefix}stats/_search?size=1000&rest_total_hits_as_int=true");
     sleep(6);
-    my $json2 = esGet("/${prefix}stats/stat/_search?size=1000&rest_total_hits_as_int=true");
+    my $json2 = esGet("/${prefix}stats/_search?size=1000&rest_total_hits_as_int=true");
     die "Some capture nodes still active" if ($json1->{hits}->{total} != $json2->{hits}->{total});
     return if ($json1->{hits}->{total} == 0);
 
@@ -6170,8 +6210,6 @@ sub dbCheckHealth {
 ################################################################################
 sub dbCheck {
     my $esversion = dbESVersion();
-    my @parts = split(/[-.]/, $esversion->{version}->{number});
-    $main::esVersion = int($parts[0]*100*100) + int($parts[1]*100) + int($parts[2]);
 
     if ($esversion->{version}->{distribution} // "" eq "opensearch") {
         if ($main::esVersion < 1000) {
@@ -6265,7 +6303,7 @@ sub progress {
 ################################################################################
 sub optimizeOther {
     logmsg "Optimizing Admin Indices\n";
-    esForceMerge("${PREFIX}stats_v30,${PREFIX}dstats_v30,${PREFIX}fields_v30,${PREFIX}files_v30,${PREFIX}sequence_v30,${PREFIX}users_v30,${PREFIX}queries_v30,${PREFIX}hunts_v30,${PREFIX}lookups_v30,${PREFIX}notifiers_v40,${PREFIX}views_v40", 1, 0);
+    esForceMerge("${PREFIX}stats_v30,${PREFIX}dstats_v30,${PREFIX}fields_v30,${PREFIX}files_v30,${PREFIX}sequence_v30,${PREFIX}users_v30,${PREFIX}queries_v30,${PREFIX}hunts_v30,${PREFIX}lookups_v30,${PREFIX}notifiers_v40,${PREFIX}views_v40,${PREFIX}configs_v50", 1, 0);
     logmsg "\n" if ($verbose > 0);
 }
 ################################################################################
@@ -6382,7 +6420,6 @@ while (@ARGV > 0 && substr($ARGV[0], 0, 1) eq "-") {
             $USERPASS .= ':' . waitForRE(qr/^.{6,}$/, "Enter 6+ character OpenSearch/Elasticsearch password for $USERPASS:");
             system ("stty echo 2> /dev/null");
         }
-        $USERPASS = encode_base64($USERPASS);
     } else {
         showHelp("Unknkown global option $ARGV[0]")
     }
@@ -6393,8 +6430,8 @@ $PREFIX = "arkime_" if (! defined $PREFIX);
 
 showHelp("Help:") if ($ARGV[1] =~ /^help$/);
 showHelp("Missing arguments") if (@ARGV < 2);
-showHelp("Unknown command '$ARGV[1]'") if ($ARGV[1] !~ /^(init|initnoprompt|clean|info|wipe|upgrade|upgradenoprompt|disable-?users|set-?shortcut|users-?import|import|restore|restorenoprompt|users-?export|export|repair|backup|expire|rotate|optimize|optimize-admin|mv|rm|rm-?missing|rm-?node|add-?missing|field|force-?put-?version|sync-?files|hide-?node|unhide-?node|add-?alias|set-?replicas|set-?shards-?per-?node|set-?allocation-?enable|allocate-?empty|unflood-?stage|shrink|ilm|ism|recreate-users|recreate-stats|recreate-dstats|recreate-fields|recreate-files|update-fields|update-history|reindex|force-sessions3-update|es-adduser|es-passwd|es-addapikey)$/);
-showHelp("Missing arguments") if (@ARGV < 3 && $ARGV[1] =~ /^(users-?import|import|users-?export|backup|restore|restorenoprompt|rm|rm-?missing|rm-?node|hide-?node|unhide-?node|set-?allocation-?enable|unflood-?stage|reindex|es-adduser|es-addapikey)$/);
+showHelp("Unknown command '$ARGV[1]'") if ($ARGV[1] !~ /^(init|initnoprompt|clean|info|wipe|upgrade|upgradenoprompt|disable-?users|set-?shortcut|users-?import|import|restore|restorenoprompt|users-?export|export|repair|repair-old|backup|expire|rotate|optimize|optimize-admin|mv|rm|rm-?missing|rm-?node|add-?missing|field|field-list|field-rm|field-enable|field-disable|force-?put-?version|sync-?files|hide-?node|unhide-?node|add-?alias|set-?replicas|set-?shards-?per-?node|set-?allocation-?enable|allocate-?empty|unflood-?stage|shrink|ilm|ism|recreate-users|recreate-stats|recreate-dstats|recreate-fields|recreate-files|update-fields|update-history|reindex|force-sessions3-update|es-adduser|es-passwd|es-addapikey)$/);
+showHelp("Missing arguments") if (@ARGV < 3 && $ARGV[1] =~ /^(users-?import|import|users-?export|backup|restore|restorenoprompt|rm|rm-?missing|rm-?node|hide-?node|unhide-?node|set-?allocation-?enable|unflood-?stage|reindex|es-adduser|es-addapikey|field-rm|field-enable|field-disable)$/);
 showHelp("Missing arguments") if (@ARGV < 4 && $ARGV[1] =~ /^(field|export|add-?missing|sync-?files|add-?alias|set-?replicas|set-?shards-?per-?node|set-?shortcut|ilm)$/);
 showHelp("Missing arguments") if (@ARGV < 5 && $ARGV[1] =~ /^(allocate-?empty|set-?shortcut|shrink)$/);
 showHelp("Must have both <old fn> and <new fn>") if (@ARGV < 4 && $ARGV[1] =~ /^(mv)$/);
@@ -6410,6 +6447,9 @@ $main::userAgent = LWP::UserAgent->new(timeout => $ESTIMEOUT + 5, keep_alive => 
 if ($ESAPIKEY ne "") {
     $main::userAgent->default_header('Authorization' => "ApiKey $ESAPIKEY");
 } elsif ($USERPASS ne "") {
+    if ($USERPASS =~ ':') {
+        $USERPASS = encode_base64($USERPASS, "");
+    }
     $main::userAgent->default_header('Authorization' => "Basic $USERPASS");
 }
 
@@ -6506,7 +6546,7 @@ if ($ARGV[1] =~ /^(users-?import|import)$/) {
     my %cont3xtIndices = map { $_->{index} => $_ } @{ esGet("/_cat/indices/cont3xt*?format=json", 1) };
 
     # Indices we want to backup, if there is an alias
-    my @indices = ("dstats", "fields", "files", "hunts", "lookups", "notifiers", "parliament", "queries", "sequence", "stats", "users", "views", "cont3xt_links", "cont3xt_views", "cont3xt_overviews", "cont3xt_history");
+    my @indices = ("configs", "dstats", "fields", "files", "hunts", "lookups", "notifiers", "parliament", "queries", "sequence", "stats", "users", "views", "cont3xt_links", "cont3xt_views", "cont3xt_overviews", "cont3xt_history");
 
     # find which we have aliases for or are in cont3xt
     @indices = grep { exists $allAliases{"${PREFIX}${_}"} || $cont3xtIndices{$_} } @indices;
@@ -7039,6 +7079,8 @@ if ($ARGV[1] =~ /^(users-?import|import)$/) {
                                                        commify(int($historysBytes/($dataNodes*scalar(@historys))));
     }
 
+    printIndex($status, "configs_v50");
+
     printIndex($status, "dstats_v30");
     printIndex($status, "dstats_v4");
     printIndex($status, "dstats_v3");
@@ -7085,15 +7127,30 @@ if ($ARGV[1] =~ /^(users-?import|import)$/) {
     printIndex($status, "cont3xt_views");
     exit 0;
 } elsif ($ARGV[1] eq "mv") {
-    (my $fn = $ARGV[2]) =~ s/\//\\\//g;
-    my $results = esGet("/${PREFIX}files/_search?q=name:$fn");
-    die "Couldn't find '$ARGV[2]' in db\n" if (@{$results->{hits}->{hits}} == 0);
+    if ($#ARGV == 3) {
+        (my $fn = $ARGV[2]) =~ s/\//\\\//g;
+        my $results = esGet("/${PREFIX}files/_search?q=name:$fn");
+        die "Couldn't find '$ARGV[2]' in db\n" if (@{$results->{hits}->{hits}} == 0);
 
-    foreach my $hit (@{$results->{hits}->{hits}}) {
-        my $script = '{"script" : "ctx._source.name = \"' . $ARGV[3] . '\"; ctx._source.locked = 1;"}';
-        esPost("/${PREFIX}files/_update/" . $hit->{_id}, $script);
+        foreach my $hit (@{$results->{hits}->{hits}}) {
+            my $script = '{"script" : "ctx._source.name = \"' . $ARGV[3] . '\"; ctx._source.locked = 1;"}';
+            esPost("/${PREFIX}files/_update/" . $hit->{_id}, $script);
+        }
+        logmsg "Moved " . scalar (@{$results->{hits}->{hits}}) . " file(s) in database\n";
+    } else {
+        if (($ARGV[3] =~ m{/$} ? 1 : 0) != ($ARGV[4] =~ m{/$} ? 1 : 0)) {
+            waitFor("YES", "Use trailing / on one argument and not the other?");
+        }
+        my $query = to_json({'query' => {'bool' => {'must' => [{'term' => {'node' => $ARGV[2]}}, {'prefix' => {'name' => $ARGV[3]}}]}}});
+        my $results = esScroll("${PREFIX}files", $query);
+        my $len = length($ARGV[3]);
+        foreach my $hit (@{$results}) {
+            my $old = $hit->{_source}->{name};
+            substr($hit->{_source}->{name}, 0, $len, $ARGV[4]);
+            esPost("/${PREFIX}files/_update/" . $hit->{_id}, qq({"doc": {"name": "$hit->{_source}->{name}", "locked": 1}}), 0);
+        }
+        logmsg "Moved " . scalar (@{$results}) . " file(s) in database\n";
     }
-    logmsg "Moved " . scalar (@{$results->{hits}->{hits}}) . " file(s) in database\n";
     exit 0;
 } elsif ($ARGV[1] eq "rm") {
     (my $fn = $ARGV[2]) =~ s/\//\\\//g;
@@ -7154,17 +7211,17 @@ if ($ARGV[1] =~ /^(users-?import|import)$/) {
     }
     exit 0;
 } elsif ($ARGV[1] =~ /^hide-?node$/) {
-    my $results = esGet("/${PREFIX}stats/stat/$ARGV[2]", 1);
+    my $results = esGet("/${PREFIX}stats/_doc/$ARGV[2]", 1);
     die "Node $ARGV[2] not found" if (!$results->{found});
     esPost("/${PREFIX}stats/_update/$ARGV[2]", '{"doc": {"hide": true}}');
     exit 0;
 } elsif ($ARGV[1] =~ /^unhide-?node$/) {
-    my $results = esGet("/${PREFIX}stats/stat/$ARGV[2]", 1);
+    my $results = esGet("/${PREFIX}stats/_doc/$ARGV[2]", 1);
     die "Node $ARGV[2] not found" if (!$results->{found});
     esPost("/${PREFIX}stats/_update/$ARGV[2]", '{"script" : "ctx._source.remove(\"hide\")"}');
     exit 0;
 } elsif ($ARGV[1] =~ /^add-?alias$/) {
-    my $results = esGet("/${PREFIX}stats/stat/$ARGV[2]", 1);
+    my $results = esGet("/${PREFIX}stats/_doc/$ARGV[2]", 1);
     die "Node $ARGV[2] already exists, must remove first" if ($results->{found});
     esPost("/${PREFIX}stats/_doc/$ARGV[2]", '{"nodeName": "' . $ARGV[2] . '", "hostname": "' . $ARGV[3] . '", "hide": true}');
     exit 0;
@@ -7205,9 +7262,10 @@ if ($ARGV[1] =~ /^(users-?import|import)$/) {
         die "Please use full path, like the pcapDir setting, instead of '.'" if ($dir eq ".");
         opendir(my $dh, $dir) || die "Can't opendir $dir: $!";
         foreach my $node (@nodes) {
-            my @files = grep { m/^$ARGV[2]-/ && -f "$dir/$_" } readdir($dh);
+            my @files = grep { m/^$node-(\d+)-(\d+).(pcap|arkime)/ && -f "$dir/$_" } readdir($dh);
             @files = map "$dir/$_", @files;
             push (@localfiles, @files);
+            rewinddir($dh);
         }
         closedir $dh;
     }
@@ -7230,7 +7288,6 @@ if ($ARGV[1] =~ /^(users-?import|import)$/) {
         next if ($file !~ /\/([^\/]*)-(\d+)-(\d+).(pcap|arkime)/);
         my @stat = stat("$file");
         if (!exists $remotefileshash{$file}) {
-            print $file;
             my $node = $1;
             my $filenum = int($3);
             progress("Adding $file $node $filenum $stat[7]\n");
@@ -7250,6 +7307,36 @@ if ($ARGV[1] =~ /^(users-?import|import)$/) {
         }
     }
     logmsg("\n") if ($verbose > 0);
+    exit 0;
+} elsif ($ARGV[1] =~ /^(field-list)$/) {
+    my $results = esGet("/${PREFIX}fields/_search?size=10000", 1);
+
+    printf("%-40s %-12s %8s\n", "Expression", "Type", "Disabled");
+    foreach my $hit (sort {$a->{_id} cmp $b->{_id}} (@{$results->{hits}->{hits}})) {
+        #print Dumper($hit);
+        printf("%-40s %-12s %8s\n", $hit->{_id}, $hit->{_source}->{type}, $hit->{_source}->{disabled} ? "true" : "false");
+    }
+    exit 0;
+} elsif ($ARGV[1] =~ /^(field-rm)$/) {
+    my $result = esGet("/${PREFIX}fields/_doc/$ARGV[2]", 1);
+    my $found = $result->{found};
+    die "Field $ARGV[2] isn't found" if (!$found);
+
+    my $json = esDelete("/${PREFIX}fields/_doc/$ARGV[2]?refresh", 1);
+    exit 0;
+} elsif ($ARGV[1] =~ /^(field-enable)$/) {
+    my $result = esGet("/${PREFIX}fields/_doc/$ARGV[2]", 1);
+    my $found = $result->{found};
+    die "Field $ARGV[2] isn't found" if (!$found);
+
+    esPost("/${PREFIX}fields/_update/$ARGV[2]", "{\"doc\":{\"disabled\": false}}");
+    exit 0;
+} elsif ($ARGV[1] =~ /^(field-disable)$/) {
+    my $result = esGet("/${PREFIX}fields/_doc/$ARGV[2]", 1);
+    my $found = $result->{found};
+    die "Field $ARGV[2] isn't found" if (!$found);
+
+    esPost("/${PREFIX}fields/_update/$ARGV[2]", "{\"doc\":{\"disabled\": true}}");
     exit 0;
 } elsif ($ARGV[1] =~ /^(field)$/) {
     my $result = esGet("/${PREFIX}fields/_doc/$ARGV[3]", 1);
@@ -7614,6 +7701,194 @@ $policy = qq/{
     print "Deleted $src\n";
     exit 0;
 } elsif ($ARGV[1] =~ /^repair$/) {
+    my @arkimeIndices = ({
+            name => "configs_v50",
+            alias => "configs",
+            create => \&configsCreate,
+            update => undef,
+        },
+        {
+            name => "dstats_v30",
+            alias => "dstats",
+            create => \&dstatsCreate,
+            update => \&dstatsUpdate,
+        },
+        {
+            name => "fields_v30",
+            alias => "fields",
+            create => \&fieldsCreate,
+            update => \&fieldsUpdate,
+        },
+        {
+            name => "files_v30",
+            alias => "files",
+            create => \&filesCreate,
+            update => \&filesUpdate,
+        },
+        {
+            name => "hunts_v30",
+            alias => "hunts",
+            create => \&huntsCreate,
+            update => \&huntsUpdate,
+        },
+        {
+            name => "lookups_v30",
+            alias => "lookups",
+            create => \&lookupsCreate,
+            update => \&lookupsUpdate,
+        },
+        {
+            name => "notifiers_v40",
+            alias => "notifiers",
+            create => \&notifiersCreate,
+            update => \&notifiersUpdate,
+        },
+        {
+            name => "parliament_v50",
+            alias => "parliament",
+            create => \&parliamentCreate,
+            update => \&parliamentUpdate,
+        },
+        {
+            name => "queries_v30",
+            alias => "queries",
+            create => \&queriesCreate,
+            update => \&queriesUpdate,
+        },
+        {
+            name => "stats_v30",
+            alias => "stats",
+            create => \&statsCreate,
+            update => \&statsUpdate,
+        },
+        {
+            name => "users_v30",
+            alias => "users",
+            create => \&usersCreate,
+            update => \&usersUpdate,
+        },
+        {
+            name => "views_v40",
+            alias => "views",
+            create => \&viewsCreate,
+            update => \&viewsUpdate,
+       });
+
+    my $nodes = esGet("/_nodes");
+    $main::numberOfNodes = dataNodes($nodes->{nodes});
+    dbVersion(1);
+
+    print "This will try and repair your Elasticsearch/OpenSearch database for Arkime.\n";
+    print "You will be asked to confirm each step, with a default choice in [] if you hit Enter\n";
+    print "PLEASE STOP ALL CAPTURE PROCESSES BEFORE CONTINUING\n";
+    print "\n";
+
+    if ($main::versionNumber != $VERSION) {
+        print "??? The db.pl version ($VERSION) doesn't match the db version ($main::versionNumber), we do NOT recommend trying to do a repair. Continue ";
+        my $choice = waitForRE(qr/^(yes|no)$/, "(yes or no)?");
+        exit 1 if ($choice ne "yes");
+    }
+
+    my $indicesa = esGet("/_cat/indices/${PREFIX}*?format=json", 1);
+    my %indices = map { $_->{index} => $_ } @{$indicesa};
+
+    my $aliasesa = esGet("/_cat/aliases/${PREFIX}*?format=json", 1);
+    my %aliases = map { $_->{alias} => $_ } @{$aliasesa};
+
+    die "Couldn't find index ${PREFIX}sequence_v30, can not repair\n" if (!defined $indices{"${PREFIX}sequence_v30"});
+
+    foreach my $aindex (@arkimeIndices) {
+        my $i = "${PREFIX}$aindex->{name}";
+        my $a = "${PREFIX}$aindex->{alias}";
+
+        print "Looking at index '$i' with alias '$a'\n";
+
+        if (defined $indices{$i} && defined $indices{$a}) {
+            print "??? There are indices with the real and alias name, which would you like to keep?\n";
+            print "??? 1) Keep index '$i' with $indices{$i}->{'docs.count'} items and delete index '$a'\n";
+            print "??? 2) Rename '$a' with $indices{$a}->{'docs.count'} items to '$i'\n";
+            print "??? 3) Do nothing for these indices\n";
+            my $choice = waitForRE(qr/^[123]?$/, "??? ([1], 2, 3)?");
+
+            next if ($choice eq "3");
+            if ($choice ne "2") {
+                print "    Deleting $a\n";
+                esDelete("/$a", 1);
+                $aindex->{update}->() if (defined $aindex->{update});
+            } else {
+                print "    Renaming $a -> $i\n";
+                esDelete("/$i", 1);
+                $aindex->{create}->();
+                esCopy($a, $i);
+                esDelete("/$a", 1);
+            }
+        } elsif (!defined $indices{$i} && defined $indices{$a}) {
+            print "??? Index '$i' is missing but index with the alias name '$a' exists with $indices{$a}->{'docs.count'} items, do you want to rename? ";
+            my $choice = waitForRE(qr/^[yn]?$/, "([y]/n)?");
+
+            if ($choice ne "n") {
+                print "    Renaming $a -> $i\n";
+                $aindex->{create}->();
+                esCopy($a, $i);
+                esDelete("/$a", 1);
+            } else {
+                print "    NOT renaming $a -> $i\n";
+                next;
+            }
+        } elsif (!defined $indices{$i} && !defined $indices{$a}) {
+            print "??? Missing index '$i', do you want to create? ";
+            my $choice = waitForRE(qr/^[yn]?$/, "([y]/n)?");
+
+            if ($choice ne "n") {
+                print "    Creating index $i\n";
+                $aindex->{create}->();
+            } else {
+                print "    NOT creating index $i\n";
+                next;
+            }
+        } else {
+            print "    Trying to update mapping for $i\n";
+            $aindex->{update}->() if (defined $aindex->{update});
+        }
+
+        esAlias("add", $aindex->{name}, $aindex->{alias});
+    }
+
+    my $templatesa = esGet("/_cat/templates/${PREFIX}*?format=json", 1);
+    my %templates = map { $_->{name} => $_ } @{$templatesa};
+
+    if (!defined $templates{"${PREFIX}sessions3_ecs_template"}) {
+        sessions3ECSTemplate();
+    }
+
+    if (!defined $templates{"${PREFIX}history_v1_template"}) {
+        $UPGRADEALLSESSIONS = 0;
+        historyUpdate();
+    }
+
+    my $mapping = esGet("/${PREFIX}files_v30/_mapping", 1);
+    if (defined $mapping->{$PREFIX . "files_v30"}->{mappings}->{properties}) {
+        if (! defined $mapping->{$PREFIX . "files_v30"}->{mappings}->{properties}->{name}->{type} || $mapping->{$PREFIX . "files_v30"}->{mappings}->{properties}->{name}->{type} ne "keyword") {
+            print "??? The ${PREFIX}files_v30 index has the wrong mapping for 'name', this will cause PCAP expire issues, should we try and fix it?\n";
+            my $choice = waitForRE(qr/^[yn]?$/, "([y]/n)?");
+            if ($choice ne "n") {
+                print "   Copying ${PREFIX}files_v30 to ${PREFIX}files-tmp and back again with the correct mapping\n";
+                esDelete("/${PREFIX}files-tmp", 1);
+                esCopy("${PREFIX}files_v30", "${PREFIX}files-tmp");
+                esDelete("/${PREFIX}files_v30", 1);
+                esDelete("/${PREFIX}files", 1);
+                filesCreate();
+                esCopy("${PREFIX}files-tmp", "${PREFIX}files_v30");
+                esAlias("add", "files_v30", "files");
+            } else {
+                print "    NOT fixing files_v30 mapping\n";
+            }
+        }
+    }
+
+    print "Repair complete\n";
+    exit 0;
+} elsif ($ARGV[1] =~ /^repair-old$/) {
     my $nodes = esGet("/_nodes");
     $main::numberOfNodes = dataNodes($nodes->{nodes});
     dbVersion(1);
@@ -7630,7 +7905,7 @@ $policy = qq/{
         }
     }
 
-    foreach my $i ("dstats_v30", "fields_v30", "hunts_v30", "lookups_v30", "notifiers_v40", "parliament_v50", "queries_v30", "stats_v30", "users_v30", "views_v40") {
+    foreach my $i ("configs_v50", "dstats_v30", "fields_v30", "hunts_v30", "lookups_v30", "notifiers_v40", "parliament_v50", "queries_v30", "stats_v30", "users_v30", "views_v40") {
         if (!defined $indices{"${PREFIX}$i"}) {
             print "--> Couldn't find index ${PREFIX}$i, repair might fail\n"
         }
@@ -7642,7 +7917,7 @@ $policy = qq/{
         }
     }
 
-    foreach my $i ("hunts", "lookups", "notifiers", "parliament", "queries", "users", "views") {
+    foreach my $i ("configs", "hunts", "lookups", "notifiers", "parliament", "queries", "users", "views") {
         if (defined $indices{"${PREFIX}$i"}) {
             print "--> Will delete the index ${PREFIX}$i and recreate as alias, this WILL cause data loss in those indices, maybe cancel and run backup first\n"
         }
@@ -7661,11 +7936,12 @@ $policy = qq/{
     $verbose = 3 if ($verbose < 3);
 
     print "Deleting any indices that should be aliases\n";
-    foreach my $i ("dstats", "fields", "hunts", "lookups", "notifiers", "parliament", "queries", "stats", "users", "views") {
+    foreach my $i ("configs", "dstats", "fields", "hunts", "lookups", "notifiers", "parliament", "queries", "stats", "users", "views") {
         esDelete("/${PREFIX}$i", 0) if (defined $indices{"${PREFIX}$i"});
     }
 
     print "Re-adding aliases\n";
+    esAlias("add", "configs_v50", "configs");
     esAlias("add", "dstats_v30", "dstats");
     esAlias("add", "fields_v30", "fields");
     esAlias("add", "files_v30", "files");
@@ -7731,6 +8007,10 @@ $policy = qq/{
         viewsUpdate();
     } else {
         viewsCreate();
+    }
+
+    if (!defined $indices{"${PREFIX}configs_v50"}) {
+        configsCreate();
     }
 
     if (defined $indices{"${PREFIX}parliament_v50"}) {
@@ -7840,6 +8120,7 @@ if ($ARGV[1] =~ /^(init|wipe|clean)/) {
         esDelete("/${PREFIX}users_v30,${OLDPREFIX}users_v7,${OLDPREFIX}users_v6,${OLDPREFIX}users_v5,${OLDPREFIX}users,${PREFIX}users?ignore_unavailable=true", 1);
         esDelete("/${PREFIX}queries_v30,${OLDPREFIX}queries_v3,${OLDPREFIX}queries_v2,${OLDPREFIX}queries_v1,${OLDPREFIX}queries,${PREFIX}queries?ignore_unavailable=true", 1);
         esDelete("/${PREFIX}parliament_v50?ignore_unavailable=true", 1);
+        esDelete("/${PREFIX}configs_v50,${PREFIX}configs?ignore_unavailable=true", 1);
     }
     esDelete("/tagger", 1);
 
@@ -7865,6 +8146,7 @@ if ($ARGV[1] =~ /^(init|wipe|clean)/) {
         usersCreate();
         queriesCreate();
         parliamentCreate();
+        configsCreate();
     }
 } elsif ($ARGV[1] =~ /^(restore|restorenoprompt)$/) {
 
@@ -7872,7 +8154,7 @@ if ($ARGV[1] =~ /^(init|wipe|clean)/) {
 
     dbCheckForActivity($PREFIX);
 
-    my @indices = ("users", "sequence", "stats", "queries", "hunts", "files", "fields", "dstats", "lookups", "notifiers", "views", "parliament");
+    my @indices = ("users", "sequence", "stats", "queries", "hunts", "files", "fields", "dstats", "lookups", "notifiers", "views", "configs", "parliament");
     my @filelist = ();
     foreach my $index (@indices) { # list of data, settings, and mappings files
         push(@filelist, "$ARGV[2].${PREFIX}${index}.json\n") if (-e "$ARGV[2].${PREFIX}${index}.json");
@@ -7910,6 +8192,7 @@ if ($ARGV[1] =~ /^(init|wipe|clean)/) {
     esDelete("/${PREFIX}lookups_v30,${OLDPREFIX}lookups_v1,${OLDPREFIX}lookups,${PREFIX}lookups?ignore_unavailable=true", 1);
     esDelete("/${PREFIX}notifiers_v40,${PREFIX}notifiers?ignore_unavailable=true", 1);
     esDelete("/${PREFIX}views_v40,${PREFIX}views?ignore_unavailable=true", 1);
+    esDelete("/${PREFIX}configs_v50,${PREFIX}configs?ignore_unavailable=true", 1);
     esDelete("/${PREFIX}users_v30,${OLDPREFIX}users_v7,${OLDPREFIX}users_v6,${OLDPREFIX}users_v5,${OLDPREFIX}users,${PREFIX}users?ignore_unavailable=true", 1);
     esDelete("/${PREFIX}queries_v30,${OLDPREFIX}queries_v3,${OLDPREFIX}queries_v2,${OLDPREFIX}queries_v1,${OLDPREFIX}queries,${PREFIX}queries?ignore_unavailable=true", 1);
 
@@ -8053,20 +8336,31 @@ if ($ARGV[1] =~ /^(init|wipe|clean)/) {
         viewsUpdate();
         lookupsUpdate();
         usersUpdate();
-    } elsif ($main::versionNumber <= 80) {
+        filesUpdate();
+        configsCreate();
+        fields82Fix();
+    } elsif ($main::versionNumber <= 81) {
         checkForOld7Indices();
         sessions3Update();
         historyUpdate();
         usersUpdate();
+        filesUpdate();
+        configsCreate();
+        fields82Fix();
+    } elsif ($main::versionNumber <= 82) {
+        checkForOld7Indices();
+        sessions3Update();
+        historyUpdate();
+        fields82Fix();
     } else {
         logmsg "db.pl is hosed\n";
     }
 }
 
 if ($DOHOTWARM) {
-    esPut("/${PREFIX}stats_v30,${PREFIX}dstats_v30,${PREFIX}fields_v30,${PREFIX}files_v30,${PREFIX}sequence_v30,${PREFIX}users_v30,${PREFIX}queries_v30,${PREFIX}hunts_v30,${PREFIX}history*,${PREFIX}lookups_v30,${PREFIX}notifiers_v40,${PREFIX}views_v40/_settings?master_timeout=${ESTIMEOUT}s&allow_no_indices=true&ignore_unavailable=true", "{\"index.routing.allocation.require.molochtype\": \"warm\"}");
+    esPut("/${PREFIX}stats_v30,${PREFIX}dstats_v30,${PREFIX}fields_v30,${PREFIX}files_v30,${PREFIX}sequence_v30,${PREFIX}users_v30,${PREFIX}queries_v30,${PREFIX}hunts_v30,${PREFIX}history*,${PREFIX}lookups_v30,${PREFIX}notifiers_v40,${PREFIX}views_v40,${PREFIX}configs_v50/_settings?master_timeout=${ESTIMEOUT}s&allow_no_indices=true&ignore_unavailable=true", "{\"index.routing.allocation.require.molochtype\": \"warm\"}");
 } else {
-    esPut("/${PREFIX}stats_v30,${PREFIX}dstats_v30,${PREFIX}fields_v30,${PREFIX}files_v30,${PREFIX}sequence_v30,${PREFIX}users_v30,${PREFIX}queries_v30,${PREFIX}hunts_v30,${PREFIX}history*,${PREFIX}lookups_v30,${PREFIX}notifiers_v40,${PREFIX}views_v40/_settings?master_timeout=${ESTIMEOUT}s&allow_no_indices=true&ignore_unavailable=true", "{\"index.routing.allocation.require.molochtype\": null}");
+    esPut("/${PREFIX}stats_v30,${PREFIX}dstats_v30,${PREFIX}fields_v30,${PREFIX}files_v30,${PREFIX}sequence_v30,${PREFIX}users_v30,${PREFIX}queries_v30,${PREFIX}hunts_v30,${PREFIX}history*,${PREFIX}lookups_v30,${PREFIX}notifiers_v40,${PREFIX}views_v40,${PREFIX}configs_v50/_settings?master_timeout=${ESTIMEOUT}s&allow_no_indices=true&ignore_unavailable=true", "{\"index.routing.allocation.require.molochtype\": null}");
 }
 
 logmsg "Finished\n";

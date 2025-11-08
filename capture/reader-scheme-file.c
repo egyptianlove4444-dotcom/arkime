@@ -51,7 +51,7 @@ LOCAL void scheme_file_monitor_do(struct inotify_event *event)
 
     if (config.debug)
         LOG("Monitor enqueing %s", fullfilename);
-    arkime_reader_scheme_load(fullfilename, sw->flags & ~ARKIME_SCHEME_FLAG_DIRHINT, sw->actions);
+    arkime_reader_scheme_load(fullfilename, sw->flags & (ArkimeSchemeFlags)(~ARKIME_SCHEME_FLAG_DIRHINT), sw->actions);
 }
 /******************************************************************************/
 LOCAL gboolean scheme_file_monitor_read()
@@ -141,14 +141,14 @@ LOCAL void scheme_file_monitor_dir(const char *dirname, ArkimeSchemeFlags flags,
 #else
 LOCAL void scheme_file_monitor_dir(const char UNUSED(*dirname), ArkimeSchemeFlags UNUSED(flags), ArkimeSchemeAction_t UNUSED(*actions))
 {
-    if (config.commandSocket)
+    if (config.commandSocket || config.commandList)
         LOG_RATE(30, "ERROR - Monitoring not supporting on this OS - %s", dirname);
     else
         LOGEXIT("ERROR - Monitoring not supporting on this OS - %s", dirname);
 }
 #endif
 /******************************************************************************/
-int scheme_file_dir(const char *dirname, ArkimeSchemeFlags flags, ArkimeSchemeAction_t *actions)
+LOCAL int scheme_file_dir(const char *dirname, ArkimeSchemeFlags flags, ArkimeSchemeAction_t *actions)
 {
     GDir   *pcapGDir;
     GError *error = 0;
@@ -184,7 +184,7 @@ int scheme_file_dir(const char *dirname, ArkimeSchemeFlags flags, ArkimeSchemeAc
             continue;
         }
 
-        arkime_reader_scheme_load(fullfilename, flags & ~ARKIME_SCHEME_FLAG_DIRHINT, actions);
+        arkime_reader_scheme_load(fullfilename, flags & (ArkimeSchemeFlags)(~ARKIME_SCHEME_FLAG_DIRHINT), actions);
         g_free(fullfilename);
     }
     g_dir_close(pcapGDir);
@@ -192,7 +192,7 @@ int scheme_file_dir(const char *dirname, ArkimeSchemeFlags flags, ArkimeSchemeAc
 }
 /******************************************************************************/
 LOCAL uint8_t buffer[0xfffff];
-int scheme_file_load(const char *uri, ArkimeSchemeFlags flags, ArkimeSchemeAction_t *actions)
+LOCAL int scheme_file_load(const char *uri, ArkimeSchemeFlags flags, ArkimeSchemeAction_t *actions)
 {
     if (strncmp("file://", uri, 7) == 0) {
         uri += 7;
@@ -237,10 +237,8 @@ int scheme_file_load(const char *uri, ArkimeSchemeFlags flags, ArkimeSchemeActio
         uri = filename;
     }
 
-    ssize_t bytesRead = 0;
-
     do {
-        bytesRead = read(fd, buffer, sizeof(buffer));
+        ssize_t bytesRead = read(fd, buffer, sizeof(buffer));
         if (bytesRead > 0) {
             if (arkime_reader_scheme_process(uri, buffer, bytesRead, NULL, actions)) {
                 close(fd);
@@ -256,7 +254,7 @@ int scheme_file_load(const char *uri, ArkimeSchemeFlags flags, ArkimeSchemeActio
         } else {
             break;
         }
-    } while (bytesRead > 0);
+    } while (1);
 
     close(fd);
     if (flags & ARKIME_SCHEME_FLAG_DELETE) {

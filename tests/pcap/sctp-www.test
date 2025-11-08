@@ -31,6 +31,11 @@
             ],
             "dstOuiCnt" : 1,
             "dstRIR" : "APNIC",
+            "dstTTL" : [
+               59
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1137034844756,
             "ipProtocol" : 132,
@@ -165,6 +170,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcRIR" : "ARIN",
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 24426
          },
          "header" : {
@@ -204,6 +213,11 @@
             ],
             "dstOuiCnt" : 1,
             "dstRIR" : "APNIC",
+            "dstTTL" : [
+               59
+            ],
+            "dstTTLCnt" : 1,
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1137034844891,
             "ipProtocol" : 132,
@@ -328,6 +342,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcRIR" : "ARIN",
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 22232
          },
          "header" : {
@@ -367,6 +385,7 @@
             ],
             "dstOuiCnt" : 1,
             "dstRIR" : "APNIC",
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1137034844900,
             "ipProtocol" : 132,
@@ -421,6 +440,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcRIR" : "ARIN",
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 294
          },
          "header" : {

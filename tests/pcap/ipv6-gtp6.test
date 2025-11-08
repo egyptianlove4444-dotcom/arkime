@@ -244,6 +244,7 @@
             "dstOuterRIR" : [
                ""
             ],
+            "ethertype" : 34525,
             "fileId" : [],
             "firstPacket" : 1513078266494,
             "ipProtocol" : 17,
@@ -305,6 +306,10 @@
                ""
             ],
             "srcPayload8" : "9d46818000010011",
+            "srcTTL" : [
+               242
+            ],
+            "srcTTLCnt" : 1,
             "totDataBytes" : 332
          },
          "header" : {

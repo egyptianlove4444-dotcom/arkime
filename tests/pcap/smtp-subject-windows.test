@@ -34,6 +34,10 @@
             "dstOuiCnt" : 2,
             "dstPayload8" : "3232302d78787878",
             "dstRIR" : "TEST",
+            "dstTTL" : [
+               245
+            ],
+            "dstTTLCnt" : 1,
             "email" : {
                "dst" : [
                   "xxxxx@xxx.net"
@@ -58,6 +62,7 @@
                ],
                "subjectCnt" : 1
             },
+            "ethertype" : 2048,
             "fileId" : [],
             "firstPacket" : 1394118475009,
             "initRTT" : 1,
@@ -154,6 +159,10 @@
             ],
             "srcOuiCnt" : 1,
             "srcPayload8" : "45484c4f20787878",
+            "srcTTL" : [
+               64
+            ],
+            "srcTTLCnt" : 1,
             "tags" : [
                "dstip",
                "srcip"
@@ -169,6 +178,10 @@
                "syn" : 1,
                "syn-ack" : 1,
                "urg" : 0
+            },
+            "tcpseq" : {
+               "dst" : 0,
+               "src" : 3213310617
             },
             "test" : {
                "ASN" : [
